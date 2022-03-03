@@ -38,3 +38,6 @@
 	path = assets/debugger
 	url = https://github.com/unknownbrackets/ppsspp-debugger.git
 	branch = bundled
+[submodule "libretro/libretro-common"]
+	path = libretro/libretro-common
+	url = https://github.com/libretro/libretro-common/

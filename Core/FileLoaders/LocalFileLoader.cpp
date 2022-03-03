@@ -35,7 +35,11 @@
 #include <fcntl.h>
 #endif
 
-#ifndef _WIN32
+#ifdef HAVE_LIBRETRO_VFS
+#include <streams/file_stream.h>
+#endif
+
+#if !defined(_WIN32) && !defined(HAVE_LIBRETRO_VFS)
 
 void LocalFileLoader::DetectSizeFd() {
 #if PPSSPP_PLATFORM(ANDROID) || (defined(_FILE_OFFSET_BITS) && _FILE_OFFSET_BITS < 64)
@@ -57,7 +61,16 @@ LocalFileLoader::LocalFileLoader(const Path &filename)
 		return;
 	}
 
-#if PPSSPP_PLATFORM(ANDROID)
+#if HAVE_LIBRETRO_VFS
+    isOpenedByFd_ = false;
+    handle_ = filestream_open(filename.c_str(), RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+    filestream_seek(handle_, 0, RETRO_VFS_SEEK_POSITION_END);
+    filesize_ = filestream_tell(handle_);
+    filestream_seek(handle_, 0, RETRO_VFS_SEEK_POSITION_START);
+    return;
+#endif
+
+#if PPSSPP_PLATFORM(ANDROID) && !defined(HAVE_LIBRETRO_VFS)
 	if (filename.Type() == PathType::CONTENT_URI) {
 		int fd = Android_OpenContentUriFd(filename.ToString(), Android_OpenContentUriMode::READ);
 		VERBOSE_LOG(SYSTEM, "Fd %d for content URI: '%s'", fd, filename.c_str());
@@ -72,7 +85,9 @@ LocalFileLoader::LocalFileLoader(const Path &filename)
 	}
 #endif
 
-#ifndef _WIN32
+#if defined(HAVE_LIBRETRO_VFS)
+// Nothing to do here...
+#elif !defined(_WIN32)
 
 	fd_ = open(filename.c_str(), O_RDONLY | O_CLOEXEC);
 	if (fd_ == -1) {
@@ -106,7 +121,9 @@ LocalFileLoader::LocalFileLoader(const Path &filename)
 }
 
 LocalFileLoader::~LocalFileLoader() {
-#ifndef _WIN32
+#if defined(HAVE_LIBRETRO_VFS)
+	filestream_close(handle_);
+#elif !defined(_WIN32)
 	if (fd_ != -1) {
 		close(fd_);
 	}
@@ -119,7 +136,10 @@ LocalFileLoader::~LocalFileLoader() {
 
 bool LocalFileLoader::Exists() {
 	// If we couldn't open it for reading, we say it does not exist.
-#ifndef _WIN32
+#if defined(HAVE_LIBRETRO_VFS)
+	return handle_ != 0;
+if (true) {
+#elif !defined(_WIN32)
 	if (isOpenedByFd_) {
 		return fd_ != -1;
 	}
@@ -157,8 +177,11 @@ size_t LocalFileLoader::ReadAt(s64 absolutePos, size_t bytes, size_t count, void
 		ERROR_LOG(FILESYS, "ReadAt from 0-sized file: %s", filename_.c_str());
 		return 0;
 	}
-
-#if PPSSPP_PLATFORM(SWITCH)
+#if defined(HAVE_LIBRETRO_VFS)
+	std::lock_guard<std::mutex> guard(readLock_);
+	filestream_seek(handle_, absolutePos, RETRO_VFS_SEEK_POSITION_START);
+	return filestream_read(handle_, data, bytes * count) / bytes;
+#elif PPSSPP_PLATFORM(SWITCH)
 	// Toolchain has no fancy IO API.  We must lock.
 	std::lock_guard<std::mutex> guard(readLock_);
 	lseek(fd_, absolutePos, SEEK_SET);

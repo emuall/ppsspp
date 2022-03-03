@@ -54,6 +54,10 @@
 #define DIR_SEP_CHRS "/"
 #endif
 
+#ifdef HAVE_LIBRETRO_VFS
+#include "streams/file_stream.h"
+#endif
+
 #define SAMPLERATE 44100
 
 static bool libretro_supports_bitmasks = false;
@@ -273,6 +277,12 @@ void retro_set_environment(retro_environment_t cb)
    environ_cb = cb;
 
    cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars.data());
+
+#ifdef HAVE_LIBRETRO_VFS
+   struct retro_vfs_interface_info vfs_iface_info { 1, nullptr };
+   if (cb(RETRO_ENVIRONMENT_GET_VFS_INTERFACE, &vfs_iface_info))
+      filestream_vfs_init(&vfs_iface_info);
+#endif
 }
 
 static int get_language_auto(void)
