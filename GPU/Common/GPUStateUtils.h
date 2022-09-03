@@ -39,7 +39,7 @@ enum ReplaceBlendType {
 
 	// Full blend equation runs in shader.
 	// We might have to make a copy of the framebuffer target to read from.
-	REPLACE_BLEND_COPY_FBO,
+	REPLACE_BLEND_READ_FRAMEBUFFER,
 
 	// Color blend mode and color gets copied to alpha blend mode.
 	REPLACE_BLEND_BLUE_TO_ALPHA,
@@ -60,7 +60,7 @@ bool IsStencilTestOutputDisabled();
 
 StencilValueType ReplaceAlphaWithStencilType();
 ReplaceAlphaType ReplaceAlphaWithStencil(ReplaceBlendType replaceBlend);
-ReplaceBlendType ReplaceBlendWithShader(bool allowShaderBlend, GEBufferFormat bufferFormat);
+ReplaceBlendType ReplaceBlendWithShader(GEBufferFormat bufferFormat);
 
 LogicOpReplaceType ReplaceLogicOpType();
 
@@ -137,12 +137,17 @@ enum class BlendEq : uint8_t {
 	COUNT
 };
 
+// Computed blend setup, including shader stuff.
 struct GenericBlendState {
-	bool enabled;
-	bool resetFramebufferRead;
 	bool applyFramebufferRead;
 	bool dirtyShaderBlendFixValues;
+
+	// Shader generation state
 	ReplaceAlphaType replaceAlphaWithStencil;
+	ReplaceBlendType replaceBlend;
+
+	// Resulting hardware blend state
+	bool blendEnabled;
 
 	BlendFactor srcColor;
 	BlendFactor dstColor;
@@ -175,17 +180,16 @@ struct GenericBlendState {
 	}
 };
 
-void ConvertBlendState(GenericBlendState &blendState, bool allowShaderBlend, bool forceReplaceBlend);
+void ConvertBlendState(GenericBlendState &blendState, bool forceReplaceBlend);
 void ApplyStencilReplaceAndLogicOpIgnoreBlend(ReplaceAlphaType replaceAlphaWithStencil, GenericBlendState &blendState);
 
 struct GenericMaskState {
 	bool applyFramebufferRead;
 	uint32_t uniformMask;  // For each bit, opposite to the PSP.
-	bool rgba[4];  // true = draw, false = don't draw this channel
+	bool maskRGBA[4];  // true = draw, false = don't draw this channel
 };
 
-void ConvertMaskState(GenericMaskState &maskState, bool allowFramebufferRead);
-bool IsColorWriteMaskComplex(bool allowFramebufferRead);
+void ConvertMaskState(GenericMaskState &maskState);
 
 struct GenericStencilFuncState {
 	bool enabled;
@@ -197,8 +201,13 @@ struct GenericStencilFuncState {
 	GEStencilOp zFail;
 	GEStencilOp zPass;
 };
-
 void ConvertStencilFuncState(GenericStencilFuncState &stencilFuncState);
+
+struct ComputedPipelineState {
+	GenericBlendState blendState;
+	GenericMaskState maskState;
+	// TODO: Add logic and possibly stencil here.
+};
 
 // See issue #15898
 inline bool SpongebobDepthInverseConditions(const GenericStencilFuncState &stencilState) {

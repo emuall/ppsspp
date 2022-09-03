@@ -122,12 +122,6 @@ static const VkLogicOp logicOps[] = {
 	VK_LOGIC_OP_SET,
 };
 
-void DrawEngineVulkan::ResetFramebufferRead() {
-	boundSecondary_ = VK_NULL_HANDLE;
-	fboTexBound_ = false;
-}
-
-// TODO: Do this more progressively. No need to compute the entire state if the entire state hasn't changed.
 // In Vulkan, we simply collect all the state together into a "pipeline key" - we don't actually set any state here
 // (the caller is responsible for setting the little dynamic state that is supported, dynState).
 void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManager, ShaderManagerVulkan *shaderManager, int prim, VulkanPipelineRasterStateKey &key, VulkanDynamicState &dynState) {
@@ -136,7 +130,6 @@ void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManag
 	bool useBufferedRendering = framebufferManager_->UseBufferedRendering();
 
 	if (gstate_c.IsDirty(DIRTY_BLEND_STATE)) {
-		gstate_c.SetAllowFramebufferRead(!g_Config.bDisableShaderBlending);
 		if (gstate.isModeClear()) {
 			key.logicOpEnable = false;
 			key.logicOp = VK_LOGIC_OP_CLEAR;
@@ -162,26 +155,28 @@ void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManag
 				key.logicOp = VK_LOGIC_OP_CLEAR;
 			}
 
-			GenericMaskState maskState;
-			ConvertMaskState(maskState, gstate_c.allowFramebufferRead);
-
-			// Set blend - unless we need to do it in the shader.
-			GenericBlendState blendState;
-			ConvertBlendState(blendState, gstate_c.allowFramebufferRead, maskState.applyFramebufferRead);
+			GenericMaskState &maskState = pipelineState_.maskState;
+			GenericBlendState &blendState = pipelineState_.blendState;
+			ConvertMaskState(maskState);
+			ConvertBlendState(blendState, maskState.applyFramebufferRead);
 
 			if (blendState.applyFramebufferRead || maskState.applyFramebufferRead) {
 				ApplyFramebufferRead(&fboTexNeedsBind_);
 				// The shader takes over the responsibility for blending, so recompute.
+				// We might still end up using blend to write something to alpha.
 				ApplyStencilReplaceAndLogicOpIgnoreBlend(blendState.replaceAlphaWithStencil, blendState);
 				dirtyRequiresRecheck_ |= DIRTY_FRAGMENTSHADER_STATE;
 				gstate_c.Dirty(DIRTY_FRAGMENTSHADER_STATE);
-			} else if (blendState.resetFramebufferRead) {
-				ResetFramebufferRead();
-				dirtyRequiresRecheck_ |= DIRTY_FRAGMENTSHADER_STATE;
-				gstate_c.Dirty(DIRTY_FRAGMENTSHADER_STATE);
+			} else {
+				if (fboTexBound_) {
+					boundSecondary_ = VK_NULL_HANDLE;
+					fboTexBound_ = false;
+					dirtyRequiresRecheck_ |= DIRTY_FRAGMENTSHADER_STATE;
+					gstate_c.Dirty(DIRTY_FRAGMENTSHADER_STATE);
+				}
 			}
 
-			if (blendState.enabled) {
+			if (blendState.blendEnabled) {
 				key.blendEnable = true;
 				key.blendOpColor = vkBlendEqLookup[(size_t)blendState.eqColor];
 				key.blendOpAlpha = vkBlendEqLookup[(size_t)blendState.eqAlpha];
@@ -209,10 +204,10 @@ void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManag
 			}
 
 			key.colorWriteMask =
-				(maskState.rgba[0] ? VK_COLOR_COMPONENT_R_BIT : 0) |
-				(maskState.rgba[1] ? VK_COLOR_COMPONENT_G_BIT : 0) |
-				(maskState.rgba[2] ? VK_COLOR_COMPONENT_B_BIT : 0) |
-				(maskState.rgba[3] ? VK_COLOR_COMPONENT_A_BIT : 0);
+				(maskState.maskRGBA[0] ? VK_COLOR_COMPONENT_R_BIT : 0) |
+				(maskState.maskRGBA[1] ? VK_COLOR_COMPONENT_G_BIT : 0) |
+				(maskState.maskRGBA[2] ? VK_COLOR_COMPONENT_B_BIT : 0) |
+				(maskState.maskRGBA[3] ? VK_COLOR_COMPONENT_A_BIT : 0);
 
 			// Workaround proposed in #10421, for bug where the color write mask is not applied correctly on Adreno.
 			if ((gstate.pmskc & 0x00FFFFFF) == 0x00FFFFFF && g_Config.bVendorBugChecksEnabled && draw_->GetBugs().Has(Draw::Bugs::COLORWRITEMASK_BROKEN_WITH_DEPTHTEST)) {
