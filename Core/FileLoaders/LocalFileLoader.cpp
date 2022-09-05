@@ -141,7 +141,7 @@ bool LocalFileLoader::Exists() {
 	// If we opened it for reading, it must exist.  Done.
 #if defined(HAVE_LIBRETRO_VFS)
     return handle_ != 0;
-#if (true) {
+
 #elif !defined(_WIN32)
 	if (isOpenedByFd_) {
 		// As an optimization, if we already tried and failed, quickly return.
