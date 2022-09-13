@@ -1122,8 +1122,6 @@ void GameSettingsScreen::CreateViews() {
 		vrFieldOfView->SetEnabledPtr(&g_Config.bEnableVR);
 		CheckBox *vrStereo = vrSettings->Add(new CheckBox(&g_Config.bEnableStereo, vr->T("Enable stereoscopic vision (Experimental)")));
 		vrStereo->SetEnabledPtr(&g_Config.bEnableVR);
-		PopupSliderChoice *vrStereoSepararation = vrSettings->Add(new PopupSliderChoice(&g_Config.iStereoSeparation, 1, 50, vr->T("Stereo separation (differs per game)", "Stereo separation (differs per game)"), 1, screenManager(), "x"));
-		vrStereoSepararation->SetEnabledPtr(&g_Config.bEnableStereo);
 	}
 }
 
@@ -1890,6 +1888,7 @@ void DeveloperToolsScreen::CreateViews() {
 
 void DeveloperToolsScreen::onFinish(DialogResult result) {
 	g_Config.Save("DeveloperToolsScreen::onFinish");
+	NativeMessageReceived("gpu_resized", "");
 }
 
 void GameSettingsScreen::CallbackRestoreDefaults(bool yes) {

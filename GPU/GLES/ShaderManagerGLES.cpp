@@ -184,13 +184,13 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 	availableUniforms = vs->GetUniformMask() | fs->GetUniformMask();
 
 	std::vector<GLRProgram::Initializer> initialize;
-	initialize.push_back({ &u_tex,          0, 0 });
-	initialize.push_back({ &u_fbotex,       0, 1 });
-	initialize.push_back({ &u_testtex,      0, 2 });
-	initialize.push_back({ &u_pal,          0, 3 }); // CLUT
-	initialize.push_back({ &u_tess_points,  0, 4 }); // Control Points
-	initialize.push_back({ &u_tess_weights_u, 0, 5 });
-	initialize.push_back({ &u_tess_weights_v, 0, 6 });
+	initialize.push_back({ &u_tex,          0, TEX_SLOT_PSP_TEXTURE });
+	initialize.push_back({ &u_fbotex,       0, TEX_SLOT_SHADERBLEND_SRC });
+	initialize.push_back({ &u_testtex,      0, TEX_SLOT_ALPHATEST });
+	initialize.push_back({ &u_pal,          0, TEX_SLOT_CLUT }); // CLUT
+	initialize.push_back({ &u_tess_points,  0, TEX_SLOT_SPLINE_POINTS }); // Control Points
+	initialize.push_back({ &u_tess_weights_u, 0, TEX_SLOT_SPLINE_WEIGHTS_U });
+	initialize.push_back({ &u_tess_weights_v, 0, TEX_SLOT_SPLINE_WEIGHTS_V });
 
 	bool useDualSource = (gstate_c.featureFlags & GPU_SUPPORTS_DUALSOURCE_BLEND) != 0;
 	bool useClip0 = VSID.Bit(VS_BIT_VERTEX_RANGE_CULLING) && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE);
@@ -529,7 +529,7 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 			ConvertMatrix4x3To4x4Transposed(leftEyeView, gstate.viewMatrix);
 			ConvertMatrix4x3To4x4Transposed(rightEyeView, gstate.viewMatrix);
 			if (!flatScreen && !is2D) {
-				UpdateVRView(gstate.projMatrix, leftEyeView, rightEyeView);
+				UpdateVRView(leftEyeView, rightEyeView);
 			}
 			render_->SetUniformM4x4Stereo("u_view", &u_view, leftEyeView, rightEyeView);
 		} else {
@@ -709,7 +709,7 @@ void ShaderManagerGLES::DirtyLastShader() {
 Shader *ShaderManagerGLES::CompileFragmentShader(FShaderID FSID) {
 	uint64_t uniformMask;
 	std::string errorString;
-	if (!GenerateFragmentShader(FSID, codeBuffer_, draw_->GetShaderLanguageDesc(), draw_->GetBugs(), &uniformMask, &errorString)) {
+	if (!GenerateFragmentShader(FSID, codeBuffer_, draw_->GetShaderLanguageDesc(), draw_->GetBugs(), &uniformMask, nullptr, &errorString)) {
 		ERROR_LOG(G3D, "Shader gen error: %s", errorString.c_str());
 		return nullptr;
 	}

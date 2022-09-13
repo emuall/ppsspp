@@ -802,8 +802,11 @@ SOURCES_C +=   $(ZSTDDIR)/common/debug.c \
                $(ZSTDDIR)/dictBuilder/fastcover.c \
                $(ZSTDDIR)/dictBuilder/zdict.c
 
+# zstd only uses asm for Linux/macOS and GNUC.
+ifneq ($(PLATFORM_EXT), win32)
 ifeq ($(TARGET_ARCH),x86_64)
 SOURCES_C +=   $(ZSTDDIR)/decompress/huf_decompress_amd64.S
+endif
 endif
 
 ifneq ($(STATIC_LINKING), 1)

@@ -44,7 +44,8 @@
 
 // Most drivers treat vkCreateShaderModule as pretty much a memcpy. What actually
 // takes time here, and makes this worthy of parallelization, is GLSLtoSPV.
-Promise<VkShaderModule> *CompileShaderModuleAsync(VulkanContext *vulkan, VkShaderStageFlagBits stage, const char *code) {
+// Takes ownership over tag.
+static Promise<VkShaderModule> *CompileShaderModuleAsync(VulkanContext *vulkan, VkShaderStageFlagBits stage, const char *code, std::string *tag) {
 	auto compile = [=] {
 		PROFILE_THIS_SCOPE("shadercomp");
 
@@ -59,29 +60,34 @@ Promise<VkShaderModule> *CompileShaderModuleAsync(VulkanContext *vulkan, VkShade
 			} else {
 				ERROR_LOG(G3D, "Error in shader compilation!");
 			}
+			std::string numberedSource = LineNumberString(code);
 			ERROR_LOG(G3D, "Messages: %s", errorMessage.c_str());
-			ERROR_LOG(G3D, "Shader source:\n%s", code);
-#ifdef SHADERLOG
-			OutputDebugStringA(LineNumberString(code).c_str());
+			ERROR_LOG(G3D, "Shader source:\n%s", numberedSource.c_str());
+#if PPSSPP_PLATFORM(WINDOWS)
 			OutputDebugStringA("Error messages:\n");
 			OutputDebugStringA(errorMessage.c_str());
+			OutputDebugStringA(numberedSource.c_str());
 #endif
 			Reporting::ReportMessage("Vulkan error in shader compilation: info: %s / code: %s", errorMessage.c_str(), code);
 		}
 
 		VkShaderModule shaderModule = VK_NULL_HANDLE;
 		if (success) {
-			success = vulkan->CreateShaderModule(spirv, &shaderModule);
+			success = vulkan->CreateShaderModule(spirv, &shaderModule, stage == VK_SHADER_STAGE_VERTEX_BIT ? "game_vertex" : "game_fragment");
 #ifdef SHADERLOG
 			OutputDebugStringA("OK");
 #endif
+			if (tag) {
+				vulkan->SetDebugName(shaderModule, VK_OBJECT_TYPE_SHADER_MODULE, tag->c_str());
+				delete tag;
+			}
 		}
 
 		return shaderModule;
 	};
 
 #ifdef _DEBUG
-	// Don't parallelize in debug mode, pathological behavior due to mutex locks in allocator.
+	// Don't parallelize in debug mode, pathological behavior due to mutex locks in allocator which is HEAVILY used by glslang.
 	return Promise<VkShaderModule>::AlreadyDone(compile());
 #else
 	return Promise<VkShaderModule>::Spawn(&g_threadManager, compile, TaskType::CPU_COMPUTE);
@@ -89,10 +95,10 @@ Promise<VkShaderModule> *CompileShaderModuleAsync(VulkanContext *vulkan, VkShade
 }
 
 
-VulkanFragmentShader::VulkanFragmentShader(VulkanContext *vulkan, FShaderID id, const char *code)
-	: vulkan_(vulkan), id_(id) {
+VulkanFragmentShader::VulkanFragmentShader(VulkanContext *vulkan, FShaderID id, FragmentShaderFlags flags, const char *code)
+	: vulkan_(vulkan), id_(id), flags_(flags) {
 	source_ = code;
-	module_ = CompileShaderModuleAsync(vulkan, VK_SHADER_STAGE_FRAGMENT_BIT, source_.c_str());
+	module_ = CompileShaderModuleAsync(vulkan, VK_SHADER_STAGE_FRAGMENT_BIT, source_.c_str(), new std::string(FragmentShaderDesc(id)));
 	if (!module_) {
 		failed_ = true;
 	} else {
@@ -122,7 +128,7 @@ std::string VulkanFragmentShader::GetShaderString(DebugShaderStringType type) co
 VulkanVertexShader::VulkanVertexShader(VulkanContext *vulkan, VShaderID id, const char *code, bool useHWTransform)
 	: vulkan_(vulkan), useHWTransform_(useHWTransform), id_(id) {
 	source_ = code;
-	module_ = CompileShaderModuleAsync(vulkan, VK_SHADER_STAGE_VERTEX_BIT, source_.c_str());
+	module_ = CompileShaderModuleAsync(vulkan, VK_SHADER_STAGE_VERTEX_BIT, source_.c_str(), new std::string(VertexShaderDesc(id).c_str()));
 	if (!module_) {
 		failed_ = true;
 	} else {
@@ -276,9 +282,10 @@ void ShaderManagerVulkan::GetShaders(int prim, u32 vertType, VulkanVertexShader 
 		// Fragment shader not in cache. Let's compile it.
 		std::string genErrorString;
 		uint64_t uniformMask = 0;  // Not used
-		bool success = GenerateFragmentShader(FSID, codeBuffer_, compat_, draw_->GetBugs(), &uniformMask, &genErrorString);
+		FragmentShaderFlags flags;
+		bool success = GenerateFragmentShader(FSID, codeBuffer_, compat_, draw_->GetBugs(), &uniformMask, &flags, &genErrorString);
 		_assert_msg_(success, "FS gen error: %s", genErrorString.c_str());
-		fs = new VulkanFragmentShader(vulkan, FSID, codeBuffer_);
+		fs = new VulkanFragmentShader(vulkan, FSID, flags, codeBuffer_);
 		fsCache_.Insert(FSID, fs);
 	}
 
@@ -370,7 +377,7 @@ VulkanFragmentShader *ShaderManagerVulkan::GetFragmentShaderFromModule(VkShaderM
 // instantaneous.
 
 #define CACHE_HEADER_MAGIC 0xff51f420 
-#define CACHE_VERSION 22
+#define CACHE_VERSION 26
 struct VulkanCacheHeader {
 	uint32_t magic;
 	uint32_t version;
@@ -417,10 +424,11 @@ bool ShaderManagerVulkan::LoadCache(FILE *f) {
 		}
 		std::string genErrorString;
 		uint64_t uniformMask = 0;
-		if (!GenerateFragmentShader(id, codeBuffer_, compat_, draw_->GetBugs(), &uniformMask, &genErrorString)) {
+		FragmentShaderFlags flags;
+		if (!GenerateFragmentShader(id, codeBuffer_, compat_, draw_->GetBugs(), &uniformMask, &flags, &genErrorString)) {
 			return false;
 		}
-		VulkanFragmentShader *fs = new VulkanFragmentShader(vulkan, id, codeBuffer_);
+		VulkanFragmentShader *fs = new VulkanFragmentShader(vulkan, id, flags, codeBuffer_);
 		fsCache_.Insert(id, fs);
 	}
 

@@ -666,6 +666,10 @@ static const char *reinterpretStrings[4][4] = {
 
 // Call this after the target has been bound for rendering. For color, raster is probably always going to win over blits/copies.
 void FramebufferManagerCommon::CopyToColorFromOverlappingFramebuffers(VirtualFramebuffer *dst) {
+	if (!useBufferedRendering_) {
+		return;
+	}
+
 	std::vector<CopySource> sources;
 	for (auto src : vfbs_) {
 		// Discard old and equal potential inputs.
@@ -2551,6 +2555,11 @@ void FramebufferManagerCommon::DownloadFramebufferForClut(u32 fb_address, u32 lo
 		// The height will be 1 for each stride or part thereof.
 		int w = std::min(pixels % vfb->fb_stride, (int)vfb->width);
 		int h = std::min((pixels + vfb->fb_stride - 1) / vfb->fb_stride, (int)vfb->height);
+
+		if (w == 0 || h > 1) {
+			// Exactly aligned, or more than one row.
+			w = std::min(vfb->fb_stride, vfb->width);
+		}
 
 		// We might still have a pending draw to the fb in question, flush if so.
 		FlushBeforeCopy();
