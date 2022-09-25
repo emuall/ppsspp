@@ -32,20 +32,98 @@ extern bool currentDialogActive;
 
 namespace Rasterizer {
 
+// This essentially AlphaBlendingResult() with fixed src.a / 1 - src.a factors and ADD equation.
+// It allows us to skip round trips between 32-bit and 16-bit color values.
+static uint32_t StandardAlphaBlend(uint32_t source, uint32_t dst) {
+#if defined(_M_SSE)
+	const __m128i alpha = _mm_cvtsi32_si128(source >> 24);
+	// Keep the alpha lane of the srcfactor zero, so we keep dest alpha.
+	const __m128i srcfactor = _mm_shufflelo_epi16(alpha, _MM_SHUFFLE(1, 0, 0, 0));
+	const __m128i dstfactor = _mm_sub_epi16(_mm_set1_epi16(255), srcfactor);
+
+	const __m128i z = _mm_setzero_si128();
+	const __m128i sourcevec = _mm_unpacklo_epi8(_mm_cvtsi32_si128(source), z);
+	const __m128i dstvec = _mm_unpacklo_epi8(_mm_cvtsi32_si128(dst), z);
+
+	// We switch to 16 bit to use mulhi, and we use 4 bits of decimal to make the 16 bit shift free.
+	const __m128i half = _mm_set1_epi16(1 << 3);
+
+	const __m128i srgb = _mm_add_epi16(_mm_slli_epi16(sourcevec, 4), half);
+	const __m128i sf = _mm_add_epi16(_mm_slli_epi16(srcfactor, 4), half);
+	const __m128i s = _mm_mulhi_epi16(srgb, sf);
+
+	const __m128i drgb = _mm_add_epi16(_mm_slli_epi16(dstvec, 4), half);
+	const __m128i df = _mm_add_epi16(_mm_slli_epi16(dstfactor, 4), half);
+	const __m128i d = _mm_mulhi_epi16(drgb, df);
+
+	const __m128i blended16 = _mm_adds_epi16(s, d);
+	return _mm_cvtsi128_si32(_mm_packus_epi16(blended16, blended16));
+#else
+	Vec3<int> srcfactor = Vec3<int>::AssignToAll(source >> 24);
+	Vec3<int> dstfactor = Vec3<int>::AssignToAll(255 - (source >> 24));
+
+	static constexpr Vec3<int> half = Vec3<int>::AssignToAll(1);
+	Vec3<int> lhs = ((Vec3<int>::FromRGB(source) * 2 + half) * (srcfactor * 2 + half)) / 1024;
+	Vec3<int> rhs = ((Vec3<int>::FromRGB(dst) * 2 + half) * (dstfactor * 2 + half)) / 1024;
+	Vec3<int> blended = lhs + rhs;
+
+	return clamp_u8(blended.r()) | (clamp_u8(blended.g()) << 8) | (clamp_u8(blended.b()) << 16);
+#endif
+}
+
 // Through mode, with the specific Darkstalker settings.
-inline void DrawSinglePixel5551(u16 *pixel, const u32 color_in, const PixelFuncID &pixelID) {
+inline void DrawSinglePixel5551(u16 *pixel, const u32 color_in) {
 	u32 new_color;
+	// Because of this check, we only support src.a / 1-src.a blending.
 	if ((color_in >> 24) == 255) {
 		new_color = color_in & 0xFFFFFF;
 	} else {
 		const u32 old_color = RGBA5551ToRGBA8888(*pixel);
-		const Vec4<int> dst = Vec4<int>::FromRGBA(old_color);
-		Vec3<int> blended = AlphaBlendingResult(pixelID, Vec4<int>::FromRGBA(color_in), dst);
-		// ToRGB() always automatically clamps.
-		new_color = blended.ToRGB();
+		new_color = StandardAlphaBlend(color_in, old_color);
 	}
 	new_color |= (*pixel & 0x8000) ? 0xff000000 : 0x00000000;
 	*pixel = RGBA8888ToRGBA5551(new_color);
+}
+
+// Check if we can safely ignore the alpha test, assuming standard alpha blending.
+static inline bool AlphaTestIsNeedless(const PixelFuncID &pixelID) {
+	switch (pixelID.AlphaTestFunc()) {
+	case GE_COMP_NEVER:
+	case GE_COMP_EQUAL:
+	case GE_COMP_LESS:
+	case GE_COMP_LEQUAL:
+		return false;
+
+	case GE_COMP_ALWAYS:
+		return true;
+
+	case GE_COMP_NOTEQUAL:
+	case GE_COMP_GREATER:
+	case GE_COMP_GEQUAL:
+		if (pixelID.alphaTestRef != 0 || pixelID.hasAlphaTestMask)
+			return false;
+		return true;
+	}
+
+	return false;
+}
+
+bool UseDrawSinglePixel5551(const PixelFuncID &pixelID) {
+	if (pixelID.clearMode || pixelID.colorTest || pixelID.stencilTest)
+		return false;
+	if (!AlphaTestIsNeedless(pixelID) || pixelID.DepthTestFunc() != GE_COMP_ALWAYS)
+		return false;
+	if (pixelID.FBFormat() != GE_FORMAT_5551 || !pixelID.alphaBlend)
+		return false;
+	// We skip blending when alpha = FF, so we can't allow other blend modes.
+	if (pixelID.AlphaBlendEq() != GE_BLENDMODE_MUL_AND_ADD || pixelID.AlphaBlendSrc() != PixelBlendFactor::SRCALPHA)
+		return false;
+	if (pixelID.AlphaBlendDst() != PixelBlendFactor::INVSRCALPHA)
+		return false;
+	if (pixelID.dithering || pixelID.applyLogicOp || pixelID.applyColorWriteMask)
+		return false;
+
+	return true;
 }
 
 static inline Vec4IntResult SOFTRAST_CALL ModulateRGBA(Vec4IntArg prim_in, Vec4IntArg texcolor_in, const SamplerID &samplerID) {
@@ -78,27 +156,6 @@ static inline Vec4IntResult SOFTRAST_CALL ModulateRGBA(Vec4IntArg prim_in, Vec4I
 	return ToVec4IntResult(out);
 }
 
-// Check if we can safely ignore the alpha test.
-static inline bool AlphaTestIsNeedless(const PixelFuncID &pixelID) {
-	switch (pixelID.AlphaTestFunc()) {
-	case GE_COMP_NEVER:
-	case GE_COMP_EQUAL:
-	case GE_COMP_LESS:
-	case GE_COMP_LEQUAL:
-		return false;
-
-	case GE_COMP_ALWAYS:
-		return true;
-
-	case GE_COMP_NOTEQUAL:
-	case GE_COMP_GREATER:
-	case GE_COMP_GEQUAL:
-		return pixelID.alphaBlend && pixelID.alphaTestRef == 0 && !pixelID.hasAlphaTestMask;
-	}
-
-	return false;
-}
-
 void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &range, const RasterizerState &state) {
 	const u8 *texptr = state.texptr[0];
 
@@ -116,8 +173,12 @@ void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &ran
 	DrawingCoords scissorTL = TransformUnit::ScreenToDrawing(range.x1, range.y1);
 	DrawingCoords scissorBR = TransformUnit::ScreenToDrawing(range.x2, range.y2);
 
-	int z = v1.screenpos.z;
-	int fog = 255;
+	const int z = v1.screenpos.z;
+	constexpr int fog = 255;
+
+	// Since it's flat, we can check depth range early.  Matters for earlyZChecks.
+	if (pixelID.applyDepthRange && (z < pixelID.cached.minz || z > pixelID.cached.maxz))
+		return;
 
 	bool isWhite = v1.color0 == 0xFFFFFFFF;
 
@@ -148,17 +209,7 @@ void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &ran
 			pos0.y = scissorTL.y;
 		}
 
-		if (!pixelID.stencilTest &&
-			pixelID.DepthTestFunc() == GE_COMP_ALWAYS &&
-			!pixelID.applyLogicOp &&
-			!pixelID.colorTest &&
-			!pixelID.dithering &&
-			pixelID.alphaBlend &&
-			AlphaTestIsNeedless(pixelID) &&
-			samplerID.useTextureAlpha &&
-			samplerID.TexFunc() == GE_TEXFUNC_MODULATE &&
-			!pixelID.applyColorWriteMask &&
-			pixelID.FBFormat() == GE_FORMAT_5551) {
+		if (UseDrawSinglePixel5551(pixelID) && samplerID.TexFunc() == GE_TEXFUNC_MODULATE && samplerID.useTextureAlpha) {
 			if (isWhite) {
 				int t = t_start;
 				for (int y = pos0.y; y < pos1.y; y++) {
@@ -167,7 +218,7 @@ void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &ran
 					for (int x = pos0.x; x < pos1.x; x++) {
 						u32 tex_color = Vec4<int>(fetchFunc(s, t, texptr, texbufw, 0, state.samplerID)).ToRGBA();
 						if (tex_color & 0xFF000000) {
-							DrawSinglePixel5551(pixel, tex_color, pixelID);
+							DrawSinglePixel5551(pixel, tex_color);
 						}
 						s += ds;
 						pixel++;
@@ -185,7 +236,7 @@ void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &ran
 						Vec4<int> tex_color = fetchFunc(s, t, texptr, texbufw, 0, state.samplerID);
 						prim_color = Vec4<int>(ModulateRGBA(ToVec4IntArg(prim_color), ToVec4IntArg(tex_color), state.samplerID));
 						if (prim_color.a() > 0) {
-							DrawSinglePixel5551(pixel, prim_color.ToRGBA(), pixelID);
+							DrawSinglePixel5551(pixel, prim_color.ToRGBA());
 						}
 						s += ds;
 						pixel++;
@@ -204,15 +255,31 @@ void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &ran
 
 			float t = tf_start;
 			const Vec4<int> c0 = Vec4<int>::FromRGBA(v1.color0);
-			for (int y = pos0.y; y < pos1.y; y++) {
-				float s = sf_start;
-				// Not really that fast but faster than triangle.
-				for (int x = pos0.x; x < pos1.x; x++) {
-					Vec4<int> prim_color = state.nearest(s, t, xoff, yoff, ToVec4IntArg(c0), &texptr, &texbufw, 0, 0, state.samplerID);
-					state.drawPixel(x, y, z, 255, ToVec4IntArg(prim_color), pixelID);
-					s += dsf;
+			if (pixelID.earlyZChecks) {
+				for (int y = pos0.y; y < pos1.y; y++) {
+					float s = sf_start;
+					// Not really that fast but faster than triangle.
+					for (int x = pos0.x; x < pos1.x; x++) {
+						if (CheckDepthTestPassed(pixelID.DepthTestFunc(), x, y, pixelID.cached.depthbufStride, z)) {
+							Vec4<int> prim_color = state.nearest(s, t, xoff, yoff, ToVec4IntArg(c0), &texptr, &texbufw, 0, 0, state.samplerID);
+							state.drawPixel(x, y, z, fog, ToVec4IntArg(prim_color), pixelID);
+						}
+
+						s += dsf;
+					}
+					t += dtf;
 				}
-				t += dtf;
+			} else {
+				for (int y = pos0.y; y < pos1.y; y++) {
+					float s = sf_start;
+					// Not really that fast but faster than triangle.
+					for (int x = pos0.x; x < pos1.x; x++) {
+						Vec4<int> prim_color = state.nearest(s, t, xoff, yoff, ToVec4IntArg(c0), &texptr, &texbufw, 0, 0, state.samplerID);
+						state.drawPixel(x, y, z, fog, ToVec4IntArg(prim_color), pixelID);
+						s += dsf;
+					}
+					t += dtf;
+				}
 			}
 		}
 	} else {
@@ -220,23 +287,25 @@ void DrawSprite(const VertexData &v0, const VertexData &v1, const BinCoords &ran
 		if (pos1.y > scissorBR.y) pos1.y = scissorBR.y + 1;
 		if (pos0.x < scissorTL.x) pos0.x = scissorTL.x;
 		if (pos0.y < scissorTL.y) pos0.y = scissorTL.y;
-		if (!pixelID.stencilTest &&
-			pixelID.DepthTestFunc() == GE_COMP_ALWAYS &&
-			!pixelID.applyLogicOp &&
-			!pixelID.colorTest &&
-			!pixelID.dithering &&
-			pixelID.alphaBlend &&
-			AlphaTestIsNeedless(pixelID) &&
-			!pixelID.applyColorWriteMask &&
-			pixelID.FBFormat() == GE_FORMAT_5551) {
+		if (UseDrawSinglePixel5551(pixelID)) {
 			if (Vec4<int>::FromRGBA(v1.color0).a() == 0)
 				return;
 
 			for (int y = pos0.y; y < pos1.y; y++) {
 				u16 *pixel = fb.Get16Ptr(pos0.x, y, pixelID.cached.framebufStride);
 				for (int x = pos0.x; x < pos1.x; x++) {
-					DrawSinglePixel5551(pixel, v1.color0, pixelID);
+					DrawSinglePixel5551(pixel, v1.color0);
 					pixel++;
+				}
+			}
+		} else if (pixelID.earlyZChecks) {
+			const Vec4<int> prim_color = Vec4<int>::FromRGBA(v1.color0);
+			for (int y = pos0.y; y < pos1.y; y++) {
+				for (int x = pos0.x; x < pos1.x; x++) {
+					if (!CheckDepthTestPassed(pixelID.DepthTestFunc(), x, y, pixelID.cached.depthbufStride, z))
+						continue;
+
+					state.drawPixel(x, y, z, fog, ToVec4IntArg(prim_color), pixelID);
 				}
 			}
 		} else {
@@ -325,15 +394,18 @@ bool RectangleFastPath(const VertexData &v0, const VertexData &v1, BinManager &b
 }
 
 static bool AreCoordsRectangleCompatible(const RasterizerState &state, const VertexData &data0, const VertexData &data1) {
-	if (!(data1.color0 == data0.color0))
+	if (data1.color0 != data0.color0)
 		return false;
-	if (!(data1.screenpos.z == data0.screenpos.z)) {
+	if (data1.screenpos.z != data0.screenpos.z) {
 		// Sometimes, we don't actually care about z.
 		if (state.pixelID.depthWrite || state.pixelID.DepthTestFunc() != GE_COMP_ALWAYS)
 			return false;
 	}
 	if (!state.throughMode) {
-		if (!state.throughMode && !(data1.color1 == data0.color1))
+		if (data1.color1 != data0.color1)
+			return false;
+		// This means it should be culled, outside range.
+		if (data1.OutsideRange() || data0.OutsideRange())
 			return false;
 		// Do we have to think about perspective correction or slope mip level?
 		if (state.enableTextures && data1.clippos.w != data0.clippos.w) {

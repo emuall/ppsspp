@@ -242,6 +242,7 @@ enum class NativeObject {
 	INIT_COMMANDBUFFER,
 	BOUND_TEXTURE0_IMAGEVIEW,
 	BOUND_TEXTURE1_IMAGEVIEW,
+	BOUND_FRAMEBUFFER_COLOR_IMAGEVIEW,
 	RENDER_MANAGER,
 	TEXTURE_VIEW,
 	NULL_IMAGEVIEW,
@@ -328,9 +329,9 @@ public:
 		COLORWRITEMASK_BROKEN_WITH_DEPTHTEST = 5,
 		BROKEN_FLAT_IN_SHADER = 6,
 		EQUAL_WZ_CORRUPTS_DEPTH = 7,
-		MALI_STENCIL_DISCARD_BUG = 8,
-		RASPBERRY_SHADER_COMP_HANG = 9,
-		MALI_CONSTANT_LOAD_BUG = 10,
+		RASPBERRY_SHADER_COMP_HANG = 8,
+		MALI_CONSTANT_LOAD_BUG = 9,
+		SUBPASS_FEEDBACK_BROKEN = 10,
 		MAX_BUG,
 	};
 
@@ -546,6 +547,7 @@ struct DeviceCaps {
 	bool textureNPOTFullySupported;
 	bool fragmentShaderDepthWriteSupported;
 	bool textureDepthSupported;
+	bool blendMinMaxSupported;
 
 	std::string deviceName;  // The device name to use when creating the thin3d context, to get the same one.
 };
@@ -557,6 +559,7 @@ typedef std::function<bool(uint8_t *data, const uint8_t *initData, uint32_t w, u
 struct TextureDesc {
 	TextureType type;
 	DataFormat format;
+
 	int width;
 	int height;
 	int depth;
@@ -650,6 +653,9 @@ public:
 	// binding must be < MAX_TEXTURE_SLOTS (0, 1 are okay if it's 2).
 	virtual void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int attachment) = 0;
 
+	// Framebuffer fetch / input attachment support, needs to be explicit in Vulkan.
+	virtual void BindCurrentFramebufferForColorInput() {}
+
 	// deprecated, only used by D3D9
 	virtual uintptr_t GetFramebufferAPITexture(Framebuffer *fbo, int channelBits, int attachment) {
 		return 0;
@@ -673,6 +679,13 @@ public:
 	virtual void BindTextures(int start, int count, Texture **textures) = 0;
 	virtual void BindVertexBuffers(int start, int count, Buffer **buffers, const int *offsets) = 0;
 	virtual void BindIndexBuffer(Buffer *indexBuffer, int offset) = 0;
+
+	// Sometimes it's necessary to bind a texture not created by thin3d, and use with a thin3d pipeline.
+	// Not pretty, and one way in the future could be to create all textures through thin3d.
+	// Data types:
+	// * Vulkan: VkImageView
+	// * D3D11: ID3D11ShaderResourceView*
+	virtual void BindNativeTexture(int sampler, void *nativeTexture) = 0;
 
 	// Only supports a single dynamic uniform buffer, for maximum compatibility with the old APIs and ease of emulation.
 	// More modern methods will be added later.

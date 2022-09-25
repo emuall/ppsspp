@@ -93,8 +93,8 @@ static inline Vec4<float> Interpolate(const float &c0, const float &c1, const fl
 	return Interpolate(c0, c1, c2, w0.Cast<float>(), w1.Cast<float>(), w2.Cast<float>(), wsum_recip);
 }
 
-void ComputeRasterizerState(RasterizerState *state, bool throughMode) {
-	ComputePixelFuncID(&state->pixelID, throughMode);
+void ComputeRasterizerState(RasterizerState *state) {
+	ComputePixelFuncID(&state->pixelID);
 	state->drawPixel = Rasterizer::GetSingleFunc(state->pixelID);
 
 	state->enableTextures = gstate.isTextureMapEnabled() && !state->pixelID.clearMode;
@@ -132,7 +132,7 @@ void ComputeRasterizerState(RasterizerState *state, bool throughMode) {
 	}
 
 	state->shadeGouraud = gstate.getShadeMode() == GE_SHADE_GOURAUD;
-	state->throughMode = throughMode;
+	state->throughMode = gstate.isModeThrough();
 	state->antialiasLines = gstate.isAntiAliasEnabled();
 
 #if defined(SOFTGPU_MEMORY_TAGGING_DETAILED) || defined(SOFTGPU_MEMORY_TAGGING_BASIC)
@@ -141,6 +141,68 @@ void ComputeRasterizerState(RasterizerState *state, bool throughMode) {
 		gpuDebug->GetCurrentDisplayList(currentList);
 	state->listPC = currentList.pc;
 #endif
+}
+
+RasterizerState OptimizeFlatRasterizerState(RasterizerState state, const VertexData &v1) {
+	uint8_t alpha = v1.color0 >> 24;
+
+	bool changedPixelID = false;
+	bool changedSamplerID = false;
+	if (!state.pixelID.clearMode) {
+		auto &pixelID = state.pixelID;
+		auto &cached = pixelID.cached;
+
+		bool useTextureAlpha = state.enableTextures && state.samplerID.useTextureAlpha;
+		if (pixelID.alphaBlend && pixelID.AlphaBlendSrc() == PixelBlendFactor::SRCALPHA && !useTextureAlpha) {
+			// Okay, we may be able to convert this to a fixed value.
+			if (alpha == 0) {
+				pixelID.alphaBlendSrc = (uint8_t)PixelBlendFactor::ZERO;
+				changedPixelID = true;
+			} else if (alpha == 0xFF) {
+				pixelID.alphaBlendSrc = (uint8_t)PixelBlendFactor::ONE;
+				changedPixelID = true;
+			}
+		}
+		if (pixelID.alphaBlend && pixelID.AlphaBlendDst() == PixelBlendFactor::INVSRCALPHA && !useTextureAlpha) {
+			if (alpha == 0) {
+				pixelID.alphaBlendDst = (uint8_t)PixelBlendFactor::ONE;
+				changedPixelID = true;
+			} else if (alpha == 0xFF) {
+				pixelID.alphaBlendDst = (uint8_t)PixelBlendFactor::ZERO;
+				changedPixelID = true;
+			}
+		}
+		if (pixelID.alphaBlend && pixelID.AlphaBlendSrc() == PixelBlendFactor::ONE && pixelID.AlphaBlendDst() == PixelBlendFactor::ZERO) {
+			if (pixelID.AlphaBlendEq() == GE_BLENDMODE_MUL_AND_ADD) {
+				pixelID.alphaBlend = false;
+				changedPixelID = true;
+			}
+		}
+	}
+	if (state.enableTextures) {
+		if (v1.color0 == 0xFFFFFFFF) {
+			// Modulate is common, sometimes even with a fixed color.  Replace is cheaper.
+			if (state.samplerID.TexFunc() == GE_TEXFUNC_MODULATE) {
+				state.samplerID.texFunc = (uint8_t)GE_TEXFUNC_REPLACE;
+				changedSamplerID = true;
+			}
+		}
+	}
+
+	if (changedPixelID)
+		state.drawPixel = Rasterizer::GetSingleFunc(state.pixelID);
+	if (changedSamplerID) {
+		state.linear = Sampler::GetLinearFunc(state.samplerID);
+		state.nearest = Sampler::GetNearestFunc(state.samplerID);
+
+		// Since the definitions are the same, just force this setting using the func pointer.
+		if (g_Config.iTexFiltering == TEX_FILTER_FORCE_LINEAR)
+			state.nearest = state.linear;
+		else if (g_Config.iTexFiltering == TEX_FILTER_FORCE_NEAREST)
+			state.linear = state.nearest;
+	}
+
+	return state;
 }
 
 static inline u8 ClampFogDepth(float fogdepth) {
@@ -205,206 +267,6 @@ static inline bool IsRightSideOrFlatBottomLine(const Vec2<int>& vertex, const Ve
 	} else {
 		// check if vertex is on our left => right side
 		return vertex.x < line1.x + (line2.x - line1.x) * (vertex.y - line1.y) / (line2.y - line1.y);
-	}
-}
-
-static inline Vec3<int> GetSourceFactor(PixelBlendFactor factor, const Vec4<int> &source, const Vec4<int> &dst, uint32_t fix) {
-	switch (factor) {
-	case PixelBlendFactor::OTHERCOLOR:
-		return dst.rgb();
-
-	case PixelBlendFactor::INVOTHERCOLOR:
-		return Vec3<int>::AssignToAll(255) - dst.rgb();
-
-	case PixelBlendFactor::SRCALPHA:
-#if defined(_M_SSE)
-		return Vec3<int>(_mm_shuffle_epi32(source.ivec, _MM_SHUFFLE(3, 3, 3, 3)));
-#else
-		return Vec3<int>::AssignToAll(source.a());
-#endif
-
-	case PixelBlendFactor::INVSRCALPHA:
-#if defined(_M_SSE)
-		return Vec3<int>(_mm_sub_epi32(_mm_set1_epi32(255), _mm_shuffle_epi32(source.ivec, _MM_SHUFFLE(3, 3, 3, 3))));
-#else
-		return Vec3<int>::AssignToAll(255 - source.a());
-#endif
-
-	case PixelBlendFactor::DSTALPHA:
-		return Vec3<int>::AssignToAll(dst.a());
-
-	case PixelBlendFactor::INVDSTALPHA:
-		return Vec3<int>::AssignToAll(255 - dst.a());
-
-	case PixelBlendFactor::DOUBLESRCALPHA:
-		return Vec3<int>::AssignToAll(2 * source.a());
-
-	case PixelBlendFactor::DOUBLEINVSRCALPHA:
-		return Vec3<int>::AssignToAll(255 - std::min(2 * source.a(), 255));
-
-	case PixelBlendFactor::DOUBLEDSTALPHA:
-		return Vec3<int>::AssignToAll(2 * dst.a());
-
-	case PixelBlendFactor::DOUBLEINVDSTALPHA:
-		return Vec3<int>::AssignToAll(255 - std::min(2 * dst.a(), 255));
-
-	case PixelBlendFactor::FIX:
-	default:
-		// All other dest factors (> 10) are treated as FIXA.
-		return Vec3<int>::FromRGB(fix);
-
-	case PixelBlendFactor::ZERO:
-		return Vec3<int>::AssignToAll(0);
-
-	case PixelBlendFactor::ONE:
-		return Vec3<int>::AssignToAll(255);
-	}
-}
-
-static inline Vec3<int> GetDestFactor(PixelBlendFactor factor, const Vec4<int> &source, const Vec4<int> &dst, uint32_t fix) {
-	switch (factor) {
-	case PixelBlendFactor::OTHERCOLOR:
-		return source.rgb();
-
-	case PixelBlendFactor::INVOTHERCOLOR:
-		return Vec3<int>::AssignToAll(255) - source.rgb();
-
-	case PixelBlendFactor::SRCALPHA:
-#if defined(_M_SSE)
-		return Vec3<int>(_mm_shuffle_epi32(source.ivec, _MM_SHUFFLE(3, 3, 3, 3)));
-#else
-		return Vec3<int>::AssignToAll(source.a());
-#endif
-
-	case PixelBlendFactor::INVSRCALPHA:
-#if defined(_M_SSE)
-		return Vec3<int>(_mm_sub_epi32(_mm_set1_epi32(255), _mm_shuffle_epi32(source.ivec, _MM_SHUFFLE(3, 3, 3, 3))));
-#else
-		return Vec3<int>::AssignToAll(255 - source.a());
-#endif
-
-	case PixelBlendFactor::DSTALPHA:
-		return Vec3<int>::AssignToAll(dst.a());
-
-	case PixelBlendFactor::INVDSTALPHA:
-		return Vec3<int>::AssignToAll(255 - dst.a());
-
-	case PixelBlendFactor::DOUBLESRCALPHA:
-		return Vec3<int>::AssignToAll(2 * source.a());
-
-	case PixelBlendFactor::DOUBLEINVSRCALPHA:
-		return Vec3<int>::AssignToAll(255 - std::min(2 * source.a(), 255));
-
-	case PixelBlendFactor::DOUBLEDSTALPHA:
-		return Vec3<int>::AssignToAll(2 * dst.a());
-
-	case PixelBlendFactor::DOUBLEINVDSTALPHA:
-		return Vec3<int>::AssignToAll(255 - std::min(2 * dst.a(), 255));
-
-	case PixelBlendFactor::FIX:
-	default:
-		// All other dest factors (> 10) are treated as FIXB.
-		return Vec3<int>::FromRGB(fix);
-
-	case PixelBlendFactor::ZERO:
-		return Vec3<int>::AssignToAll(0);
-
-	case PixelBlendFactor::ONE:
-		return Vec3<int>::AssignToAll(255);
-	}
-}
-
-// Removed inline here - it was never chosen to be inlined by the compiler anyway, too complex.
-Vec3<int> AlphaBlendingResult(const PixelFuncID &pixelID, const Vec4<int> &source, const Vec4<int> &dst) {
-	// Note: These factors cannot go below 0, but they can go above 255 when doubling.
-	Vec3<int> srcfactor = GetSourceFactor(pixelID.AlphaBlendSrc(), source, dst, pixelID.cached.alphaBlendSrc);
-	Vec3<int> dstfactor = GetDestFactor(pixelID.AlphaBlendDst(), source, dst, pixelID.cached.alphaBlendDst);
-
-	switch (pixelID.AlphaBlendEq()) {
-	case GE_BLENDMODE_MUL_AND_ADD:
-	{
-#if defined(_M_SSE)
-		// We switch to 16 bit to use mulhi, and we use 4 bits of decimal to make the 16 bit shift free.
-		const __m128i half = _mm_set1_epi16(1 << 3);
-
-		const __m128i srgb = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(source.ivec, source.ivec), 4), half);
-		const __m128i sf = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(srcfactor.ivec, srcfactor.ivec), 4), half);
-		const __m128i s = _mm_mulhi_epi16(srgb, sf);
-
-		const __m128i drgb = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(dst.ivec, dst.ivec), 4), half);
-		const __m128i df = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(dstfactor.ivec, dstfactor.ivec), 4), half);
-		const __m128i d = _mm_mulhi_epi16(drgb, df);
-
-		return Vec3<int>(_mm_unpacklo_epi16(_mm_adds_epi16(s, d), _mm_setzero_si128()));
-#else
-		static constexpr Vec3<int> half = Vec3<int>::AssignToAll(1);
-		Vec3<int> lhs = ((source.rgb() * 2 + half) * (srcfactor * 2 + half)) / 1024;
-		Vec3<int> rhs = ((dst.rgb() * 2 + half) * (dstfactor * 2 + half)) / 1024;
-		return lhs + rhs;
-#endif
-	}
-
-	case GE_BLENDMODE_MUL_AND_SUBTRACT:
-	{
-#if defined(_M_SSE)
-		const __m128i half = _mm_set1_epi16(1 << 3);
-
-		const __m128i srgb = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(source.ivec, source.ivec), 4), half);
-		const __m128i sf = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(srcfactor.ivec, srcfactor.ivec), 4), half);
-		const __m128i s = _mm_mulhi_epi16(srgb, sf);
-
-		const __m128i drgb = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(dst.ivec, dst.ivec), 4), half);
-		const __m128i df = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(dstfactor.ivec, dstfactor.ivec), 4), half);
-		const __m128i d = _mm_mulhi_epi16(drgb, df);
-
-		return Vec3<int>(_mm_unpacklo_epi16(_mm_max_epi16(_mm_subs_epi16(s, d), _mm_setzero_si128()), _mm_setzero_si128()));
-#else
-		static constexpr Vec3<int> half = Vec3<int>::AssignToAll(1);
-		Vec3<int> lhs = ((source.rgb() * 2 + half) * (srcfactor * 2 + half)) / 1024;
-		Vec3<int> rhs = ((dst.rgb() * 2 + half) * (dstfactor * 2 + half)) / 1024;
-		return lhs - rhs;
-#endif
-	}
-
-	case GE_BLENDMODE_MUL_AND_SUBTRACT_REVERSE:
-	{
-#if defined(_M_SSE)
-		const __m128i half = _mm_set1_epi16(1 << 3);
-
-		const __m128i srgb = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(source.ivec, source.ivec), 4), half);
-		const __m128i sf = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(srcfactor.ivec, srcfactor.ivec), 4), half);
-		const __m128i s = _mm_mulhi_epi16(srgb, sf);
-
-		const __m128i drgb = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(dst.ivec, dst.ivec), 4), half);
-		const __m128i df = _mm_add_epi16(_mm_slli_epi16(_mm_packs_epi32(dstfactor.ivec, dstfactor.ivec), 4), half);
-		const __m128i d = _mm_mulhi_epi16(drgb, df);
-
-		return Vec3<int>(_mm_unpacklo_epi16(_mm_max_epi16(_mm_subs_epi16(d, s), _mm_setzero_si128()), _mm_setzero_si128()));
-#else
-		static constexpr Vec3<int> half = Vec3<int>::AssignToAll(1);
-		Vec3<int> lhs = ((source.rgb() * 2 + half) * (srcfactor * 2 + half)) / 1024;
-		Vec3<int> rhs = ((dst.rgb() * 2 + half) * (dstfactor * 2 + half)) / 1024;
-		return rhs - lhs;
-#endif
-	}
-
-	case GE_BLENDMODE_MIN:
-		return Vec3<int>(std::min(source.r(), dst.r()),
-						std::min(source.g(), dst.g()),
-						std::min(source.b(), dst.b()));
-
-	case GE_BLENDMODE_MAX:
-		return Vec3<int>(std::max(source.r(), dst.r()),
-						std::max(source.g(), dst.g()),
-						std::max(source.b(), dst.b()));
-
-	case GE_BLENDMODE_ABSDIFF:
-		return Vec3<int>(::abs(source.r() - dst.r()),
-						::abs(source.g() - dst.g()),
-						::abs(source.b() - dst.b()));
-
-	default:
-		return source.rgb();
 	}
 }
 
@@ -893,7 +755,7 @@ void DrawTriangle(const VertexData &v0, const VertexData &v1, const VertexData &
 	drawSlice(v0, v1, v2, range.x1, range.y1, range.x2, range.y2, state);
 }
 
-void DrawRectangle(const VertexData &v0, const VertexData &v1, const BinCoords &range, const RasterizerState &state) {
+void DrawRectangle(const VertexData &v0, const VertexData &v1, const BinCoords &range, const RasterizerState &rastState) {
 	int entireX1 = std::min(v0.screenpos.x, v1.screenpos.x);
 	int entireY1 = std::min(v0.screenpos.y, v1.screenpos.y);
 	int entireX2 = std::max(v0.screenpos.x, v1.screenpos.x) - 1;
@@ -902,6 +764,8 @@ void DrawRectangle(const VertexData &v0, const VertexData &v1, const BinCoords &
 	int minY = std::max(entireY1, range.y1) | (SCREEN_SCALE_FACTOR / 2 - 1);
 	int maxX = std::min(entireX2, range.x2);
 	int maxY = std::min(entireY2, range.y2);
+
+	RasterizerState state = OptimizeFlatRasterizerState(rastState, v1);
 
 	Vec2f rowST(0.0f, 0.0f);
 	// Note: this is double the x or y movement.
@@ -1136,13 +1000,20 @@ void DrawPoint(const VertexData &v0, const BinCoords &range, const RasterizerSta
 }
 
 void ClearRectangle(const VertexData &v0, const VertexData &v1, const BinCoords &range, const RasterizerState &state) {
-	DrawingCoords pprime = TransformUnit::ScreenToDrawing(range.x1, range.y1);
-	DrawingCoords pend = TransformUnit::ScreenToDrawing(range.x2, range.y2);
+	int entireX1 = std::min(v0.screenpos.x, v1.screenpos.x);
+	int entireY1 = std::min(v0.screenpos.y, v1.screenpos.y);
+	int entireX2 = std::max(v0.screenpos.x, v1.screenpos.x) - 1;
+	int entireY2 = std::max(v0.screenpos.y, v1.screenpos.y) - 1;
+	int minX = std::max(entireX1, range.x1) | (SCREEN_SCALE_FACTOR / 2 - 1);
+	int minY = std::max(entireY1, range.y1) | (SCREEN_SCALE_FACTOR / 2 - 1);
+	int maxX = std::min(entireX2, range.x2);
+	int maxY = std::min(entireY2, range.y2);
+	const DrawingCoords pprime = TransformUnit::ScreenToDrawing(minX, minY);
+	const DrawingCoords pend = TransformUnit::ScreenToDrawing(maxX, maxY);
 	auto &pixelID = state.pixelID;
 	auto &samplerID = state.samplerID;
 
-	// Min and max are in PSP fixed point screen coordinates, 16 here is for the 4 subpixel bits.
-	const int w = (range.x2 - range.x1 + 1) / SCREEN_SCALE_FACTOR;
+	const int w = pend.x - pprime.x + 1;
 	if (w <= 0)
 		return;
 
@@ -1235,6 +1106,7 @@ void ClearRectangle(const VertexData &v0, const VertexData &v1, const BinCoords 
 
 	case GE_FORMAT_INVALID:
 	case GE_FORMAT_DEPTH16:
+	case GE_FORMAT_CLUT8:
 		_dbg_assert_msg_(false, "Software: invalid framebuf format.");
 		break;
 	}
@@ -1365,7 +1237,7 @@ void DrawLine(const VertexData &v0, const VertexData &v1, const BinCoords &range
 						maskOK = false;
 				}
 
-				if (!CheckDepthTestPassed(pixelID.DepthTestFunc(), x, y, pixelID.cached.depthbufStride, z)) {
+				if (!CheckDepthTestPassed(pixelID.DepthTestFunc(), p.x, p.y, pixelID.cached.depthbufStride, z)) {
 					maskOK = false;
 				}
 			}

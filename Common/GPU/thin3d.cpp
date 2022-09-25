@@ -33,6 +33,9 @@ size_t DataFormatSizeInBytes(DataFormat fmt) {
 	case DataFormat::R8G8B8A8_SNORM: return 4;
 	case DataFormat::R8G8B8A8_UINT: return 4;
 	case DataFormat::R8G8B8A8_SINT: return 4;
+
+	case DataFormat::R16_UNORM: return 2;
+
 	case DataFormat::R16_FLOAT: return 2;
 	case DataFormat::R16G16_FLOAT: return 4;
 	case DataFormat::R16G16B16A16_FLOAT: return 8;
@@ -675,9 +678,9 @@ const char *Bugs::GetBugName(uint32_t bug) {
 	case COLORWRITEMASK_BROKEN_WITH_DEPTHTEST: return "COLORWRITEMASK_BROKEN_WITH_DEPTHTEST";
 	case BROKEN_FLAT_IN_SHADER: return "BROKEN_FLAT_IN_SHADER";
 	case EQUAL_WZ_CORRUPTS_DEPTH: return "EQUAL_WZ_CORRUPTS_DEPTH";
-	case MALI_STENCIL_DISCARD_BUG: return "MALI_STENCIL_DISCARD_BUG";
 	case RASPBERRY_SHADER_COMP_HANG: return "RASPBERRY_SHADER_COMP_HANG";
 	case MALI_CONSTANT_LOAD_BUG: return "MALI_CONSTANT_LOAD_BUG";
+	case SUBPASS_FEEDBACK_BROKEN: return "SUBPASS_FEEDBACK_BROKEN";
 	default: return "(N/A)";
 	}
 }

@@ -170,8 +170,8 @@ static std::string CutFromMain(std::string str) {
 }
 
 static VulkanPipeline *CreateVulkanPipeline(VulkanRenderManager *renderManager, VkPipelineCache pipelineCache,
-		VkPipelineLayout layout, const VulkanPipelineRasterStateKey &key,
-		const DecVtxFormat *decFmt, VulkanVertexShader *vs, VulkanFragmentShader *fs, bool useHwTransform, u32 variantBitmask) {
+	VkPipelineLayout layout, PipelineFlags pipelineFlags, const VulkanPipelineRasterStateKey &key,
+	const DecVtxFormat *decFmt, VulkanVertexShader *vs, VulkanFragmentShader *fs, bool useHwTransform, u32 variantBitmask) {
 	VulkanPipeline *vulkanPipeline = new VulkanPipeline();
 	VKRGraphicsPipelineDesc *desc = &vulkanPipeline->desc;
 	desc->pipelineCache = pipelineCache;
@@ -221,7 +221,7 @@ static VulkanPipeline *CreateVulkanPipeline(VulkanRenderManager *renderManager, 
 	VkDynamicState *dynamicStates = &desc->dynamicStates[0];
 	int numDyn = 0;
 	if (key.blendEnable &&
-		  (UsesBlendConstant(key.srcAlpha) || UsesBlendConstant(key.srcColor) || UsesBlendConstant(key.destAlpha) || UsesBlendConstant(key.destColor))) {
+		(UsesBlendConstant(key.srcAlpha) || UsesBlendConstant(key.srcColor) || UsesBlendConstant(key.destAlpha) || UsesBlendConstant(key.destColor))) {
 		dynamicStates[numDyn++] = VK_DYNAMIC_STATE_BLEND_CONSTANTS;
 		useBlendConstant = true;
 	}
@@ -232,12 +232,12 @@ static VulkanPipeline *CreateVulkanPipeline(VulkanRenderManager *renderManager, 
 		dynamicStates[numDyn++] = VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
 		dynamicStates[numDyn++] = VK_DYNAMIC_STATE_STENCIL_REFERENCE;
 	}
-	
+
 	VkPipelineDynamicStateCreateInfo &ds = desc->ds;
 	ds.flags = 0;
 	ds.pDynamicStates = dynamicStates;
 	ds.dynamicStateCount = numDyn;
-	
+
 	VkPipelineRasterizationStateCreateInfo &rs = desc->rs;
 	rs.flags = 0;
 	rs.depthBiasEnable = false;
@@ -296,17 +296,16 @@ static VulkanPipeline *CreateVulkanPipeline(VulkanRenderManager *renderManager, 
 
 	desc->pipelineLayout = layout;
 
-	VKRGraphicsPipeline *pipeline = renderManager->CreateGraphicsPipeline(desc, variantBitmask, "game");
+	VKRGraphicsPipeline *pipeline = renderManager->CreateGraphicsPipeline(desc, pipelineFlags, variantBitmask, "game");
 
 	vulkanPipeline->pipeline = pipeline;
-	vulkanPipeline->flags = 0;
-	if (useBlendConstant)
-		vulkanPipeline->flags |= PIPELINE_FLAG_USES_BLEND_CONSTANT;
-	if (key.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST || key.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP)
-		vulkanPipeline->flags |= PIPELINE_FLAG_USES_LINES;
-	if (dss.depthTestEnable || dss.stencilTestEnable) {
-		vulkanPipeline->flags |= PIPELINE_FLAG_USES_DEPTH_STENCIL;
+	if (useBlendConstant) {
+		pipelineFlags |= PipelineFlags::USES_BLEND_CONSTANT;
 	}
+	if (dss.depthTestEnable || dss.stencilTestEnable) {
+		pipelineFlags |= PipelineFlags::USES_DEPTH_STENCIL;
+	}
+	vulkanPipeline->pipelineFlags = pipelineFlags;
 	return vulkanPipeline;
 }
 
@@ -329,8 +328,13 @@ VulkanPipeline *PipelineManagerVulkan::GetOrCreatePipeline(VulkanRenderManager *
 	if (iter)
 		return iter;
 
+	PipelineFlags pipelineFlags = (PipelineFlags)0;
+	if (fs->Flags() & FragmentShaderFlags::INPUT_ATTACHMENT) {
+		pipelineFlags |= PipelineFlags::USES_INPUT_ATTACHMENT;
+	}
+
 	VulkanPipeline *pipeline = CreateVulkanPipeline(
-		renderManager, pipelineCache_, layout,
+		renderManager, pipelineCache_, layout, pipelineFlags,
 		rasterKey, decFmt, vs, fs, useHwTransform, variantBitmask);
 	pipelines_.Insert(key, pipeline);
 

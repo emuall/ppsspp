@@ -142,10 +142,11 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		if (gl_extensions.EXT_gpu_shader4) {
 			gl_exts.push_back("#extension GL_EXT_gpu_shader4 : enable");
 		}
-		if (gl_extensions.EXT_clip_cull_distance && id.Bit(VS_BIT_VERTEX_RANGE_CULLING)) {
+		bool useClamp = gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP) && !id.Bit(VS_BIT_IS_THROUGH);
+		if (gl_extensions.EXT_clip_cull_distance && (id.Bit(VS_BIT_VERTEX_RANGE_CULLING) || useClamp)) {
 			gl_exts.push_back("#extension GL_EXT_clip_cull_distance : enable");
 		}
-		if (gl_extensions.APPLE_clip_distance && id.Bit(VS_BIT_VERTEX_RANGE_CULLING)) {
+		if (gl_extensions.APPLE_clip_distance && (id.Bit(VS_BIT_VERTEX_RANGE_CULLING) || useClamp)) {
 			gl_exts.push_back("#extension GL_APPLE_clip_distance : enable");
 		}
 		if (gl_extensions.ARB_cull_distance && id.Bit(VS_BIT_VERTEX_RANGE_CULLING)) {
@@ -227,6 +228,10 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 	bool texCoordInVec3 = false;
 
 	bool vertexRangeCulling = id.Bit(VS_BIT_VERTEX_RANGE_CULLING) && !isModeThrough;
+	bool clipClampedDepth = !isModeThrough && gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP) && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE);
+	const char *vertexRangeClipSuffix = "[0]";
+	if (vertexRangeCulling && clipClampedDepth)
+		vertexRangeClipSuffix = "[2]";
 
 	if (compat.shaderLanguage == GLSL_VULKAN) {
 		WRITE(p, "\n");
@@ -419,8 +424,15 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			WRITE(p, "  vec4 gl_Position   : POSITION;\n");
 		} else {
 			WRITE(p, "  vec4 gl_Position   : SV_Position;\n");
-			if (vertexRangeCulling && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE)) {
-				WRITE(p, "  float gl_ClipDistance : SV_ClipDistance0;\n");
+			bool clipRange = vertexRangeCulling && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE);
+			if (clipClampedDepth && clipRange) {
+				WRITE(p, "  float3 gl_ClipDistance : SV_ClipDistance;\n");
+				vertexRangeClipSuffix = ".z";
+			} else if (clipClampedDepth) {
+				WRITE(p, "  float2 gl_ClipDistance : SV_ClipDistance;\n");
+			} else if (clipRange) {
+				WRITE(p, "  float gl_ClipDistance : SV_ClipDistance;\n");
+				vertexRangeClipSuffix = "";
 			}
 			if (vertexRangeCulling && gstate_c.Supports(GPU_SUPPORTS_CULL_DISTANCE)) {
 				WRITE(p, "  float2 gl_CullDistance : SV_CullDistance0;\n");
@@ -1116,7 +1128,10 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 					}
 				} else {
 					if (hasTexcoord) {
-						WRITE(p, "  %sv_texcoord = vec3(texcoord.xy * u_uvscaleoffset.xy + u_uvscaleoffset.zw, 0.0);\n", compat.vsOutPrefix);
+						if (doBezier || doSpline)
+							WRITE(p, "  %sv_texcoord = vec3(tess.tex.xy * u_uvscaleoffset.xy + u_uvscaleoffset.zw, 0.0);\n", compat.vsOutPrefix);
+						else
+							WRITE(p, "  %sv_texcoord = vec3(texcoord.xy * u_uvscaleoffset.xy + u_uvscaleoffset.zw, 0.0);\n", compat.vsOutPrefix);
 					} else {
 						WRITE(p, "  %sv_texcoord = vec3(u_uvscaleoffset.zw, 0.0);\n", compat.vsOutPrefix);
 					}
@@ -1128,26 +1143,36 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 					std::string temp_tc;
 					switch (uvProjMode) {
 					case GE_PROJMAP_POSITION:  // Use model space XYZ as source
-						temp_tc = "vec4(position, 1.0)";
+						if (doBezier || doSpline)
+							temp_tc = "vec4(tess.pos, 1.0)";
+						else
+							temp_tc = "vec4(position, 1.0)";
 						break;
 					case GE_PROJMAP_UV:  // Use unscaled UV as source
 						{
 							// prescale is false here.
 							if (hasTexcoord) {
-								temp_tc = "vec4(texcoord.xy, 0.0, 1.0)";
+								if (doBezier || doSpline)
+									temp_tc = "vec4(tess.tex.xy, 0.0, 1.0)";
+								else
+									temp_tc = "vec4(texcoord.xy, 0.0, 1.0)";
 							} else {
 								temp_tc = "vec4(0.0, 0.0, 0.0, 1.0)";
 							}
 						}
 						break;
 					case GE_PROJMAP_NORMALIZED_NORMAL:  // Use normalized transformed normal as source
-						if (hasNormal)
+						if ((doBezier || doSpline) && hasNormalTess)
+							temp_tc = StringFromFormat("length(tess.nrm) == 0.0 ? vec4(0.0, 0.0, 1.0, 1.0) : vec4(normalize(%stess.nrm), 1.0)", flipNormalTess ? "-" : "");
+						else if (hasNormal)
 							temp_tc = StringFromFormat("length(normal) == 0.0 ? vec4(0.0, 0.0, 1.0, 1.0) : vec4(normalize(%snormal), 1.0)", flipNormal ? "-" : "");
 						else
 							temp_tc = "vec4(0.0, 0.0, 1.0, 1.0)";
 						break;
 					case GE_PROJMAP_NORMAL:  // Use non-normalized transformed normal as source
-						if (hasNormal)
+						if ((doBezier || doSpline) && hasNormalTess)
+							temp_tc = flipNormalTess ? "vec4(-tess.nrm, 1.0)" : "vec4(tess.nrm, 1.0)";
+						else if (hasNormal)
 							temp_tc = flipNormal ? "vec4(-normal, 1.0)" : "vec4(normal, 1.0)";
 						else
 							temp_tc = "vec4(0.0, 0.0, 1.0, 1.0)";
@@ -1177,6 +1202,32 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			WRITE(p, "  %sv_fogdepth = (viewPos.z + u_fogcoef.x) * u_fogcoef.y;\n", compat.vsOutPrefix);
 	}
 
+	if (clipClampedDepth) {
+		const char *clip0 = compat.shaderLanguage == HLSL_D3D11 ? ".x" : "[0]";
+		const char *clip1 = compat.shaderLanguage == HLSL_D3D11 ? ".y" : "[1]";
+
+		// This should clip against minz, but only when it's above zero.
+		if (ShaderLanguageIsOpenGL(compat.shaderLanguage)) {
+			// On OpenGL/GLES, these values account for the -1 -> 1 range.
+			WRITE(p, "  if (u_depthRange.y - u_depthRange.x >= 1.0) {\n");
+			WRITE(p, "    %sgl_ClipDistance%s = outPos.w + outPos.z;\n", compat.vsOutPrefix, clip0);
+		} else {
+			// Everywhere else, it's 0 -> 1, simpler.
+			WRITE(p, "  if (u_depthRange.y >= 1.0) {\n");
+			WRITE(p, "    %sgl_ClipDistance%s = outPos.z;\n", compat.vsOutPrefix, clip0);
+		}
+		WRITE(p, "  } else {\n");
+		WRITE(p, "    %sgl_ClipDistance%s = 0.0;\n", compat.vsOutPrefix, clip0);
+		WRITE(p, "  }\n");
+
+		// This is similar, but for maxz when it's below 65535.0.  -1/0 don't matter here.
+		WRITE(p, "  if (u_depthRange.x + u_depthRange.y <= 65534.0) {\n");
+		WRITE(p, "    %sgl_ClipDistance%s = outPos.w - outPos.z;\n", compat.vsOutPrefix, clip1);
+		WRITE(p, "  } else {\n");
+		WRITE(p, "    %sgl_ClipDistance%s = 0.0;\n", compat.vsOutPrefix, clip1);
+		WRITE(p, "  }\n");
+	}
+
 	if (vertexRangeCulling && !IsVRBuild()) {
 		WRITE(p, "  vec3 projPos = outPos.xyz / outPos.w;\n");
 		WRITE(p, "  float projZ = (projPos.z - u_depthRange.z) * u_depthRange.w;\n");
@@ -1194,12 +1245,11 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		WRITE(p, "    }\n");
 		WRITE(p, "  }\n");
 
-		const char *clip0 = compat.shaderLanguage == HLSL_D3D11 ? "" : "[0]";
 		const char *cull0 = compat.shaderLanguage == HLSL_D3D11 ? ".x" : "[0]";
 		const char *cull1 = compat.shaderLanguage == HLSL_D3D11 ? ".y" : "[1]";
 		if (gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE)) {
 			// TODO: Not rectangles...
-			WRITE(p, "  %sgl_ClipDistance%s = projZ * outPos.w + outPos.w;\n", compat.vsOutPrefix, clip0);
+			WRITE(p, "  %sgl_ClipDistance%s = projZ * outPos.w + outPos.w;\n", compat.vsOutPrefix, vertexRangeClipSuffix);
 		}
 		if (gstate_c.Supports(GPU_SUPPORTS_CULL_DISTANCE)) {
 			// Cull any triangle fully outside in the same direction when depth clamp enabled.

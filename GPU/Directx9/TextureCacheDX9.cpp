@@ -290,8 +290,6 @@ void TextureCacheDX9::BuildTexture(TexCacheEntry *const entry) {
 		return;
 	}
 
-	Draw::DataFormat texFmt = FromD3D9Format(dstFmt);
-
 	if (plan.depth == 1) {
 		// Regular loop.
 		for (int i = 0; i < levels; i++) {
@@ -307,7 +305,7 @@ void TextureCacheDX9::BuildTexture(TexCacheEntry *const entry) {
 			}
 			uint8_t *data = (uint8_t *)rect.pBits;
 			int stride = rect.Pitch;
-			LoadTextureLevel(*entry, data, stride, *plan.replaced, (i == 0) ? plan.baseLevelSrc : i, plan.scaleFactor, texFmt, false);
+			LoadTextureLevel(*entry, data, stride, *plan.replaced, (i == 0) ? plan.baseLevelSrc : i, plan.scaleFactor, FromD3D9Format(dstFmt), TexDecodeFlags{});
 			((LPDIRECT3DTEXTURE9)texture)->UnlockRect(dstLevel);
 		}
 	} else {
@@ -322,7 +320,7 @@ void TextureCacheDX9::BuildTexture(TexCacheEntry *const entry) {
 		uint8_t *data = (uint8_t *)box.pBits;
 		int stride = box.RowPitch;
 		for (int i = 0; i < plan.depth; i++) {
-			LoadTextureLevel(*entry, data, stride, *plan.replaced, (i == 0) ? plan.baseLevelSrc : i, plan.scaleFactor, texFmt, false);
+			LoadTextureLevel(*entry, data, stride, *plan.replaced, (i == 0) ? plan.baseLevelSrc : i, plan.scaleFactor, FromD3D9Format(dstFmt), TexDecodeFlags{});
 			data += box.SlicePitch;
 		}
 		((LPDIRECT3DVOLUMETEXTURE9)texture)->UnlockBox(0);
@@ -357,20 +355,6 @@ D3DFORMAT TextureCacheDX9::GetDestFormat(GETextureFormat format, GEPaletteFormat
 	case GE_TFMT_DXT5:
 	default:
 		return D3DFMT_A8R8G8B8;
-	}
-}
-
-CheckAlphaResult TextureCacheDX9::CheckAlpha(const u32 *pixelData, u32 dstFmt, int w) {
-	switch (dstFmt) {
-	case D3DFMT_A4R4G4B4:
-		return CheckAlpha16((const u16 *)pixelData, w, 0xF000);
-	case D3DFMT_A1R5G5B5:
-		return CheckAlpha16((const u16 *)pixelData, w, 0x8000);
-	case D3DFMT_R5G6B5:
-		// Never has any alpha.
-		return CHECKALPHA_FULL;
-	default:
-		return CheckAlpha32(pixelData, w, 0xFF000000);
 	}
 }
 
@@ -455,4 +439,9 @@ bool TextureCacheDX9::GetCurrentTextureDebug(GPUDebugBuffer &buffer, int level) 
 	}
 
 	return success;
+}
+
+void *TextureCacheDX9::GetNativeTextureView(const TexCacheEntry *entry) {
+	LPDIRECT3DBASETEXTURE9 tex = DxTex(entry);
+	return (void *)tex;
 }

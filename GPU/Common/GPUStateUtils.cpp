@@ -231,6 +231,7 @@ StencilValueType ReplaceAlphaWithStencilType() {
 	case GE_FORMAT_8888:
 	case GE_FORMAT_INVALID:
 	case GE_FORMAT_DEPTH16:
+	case GE_FORMAT_CLUT8:
 		switch (gstate.getStencilOpZPass()) {
 		case GE_STENCILOP_REPLACE:
 			// TODO: Could detect zero here and force ZERO - less uniform updates?
@@ -856,66 +857,67 @@ static inline bool blendColorSimilar(uint32_t a, uint32_t b, int margin = 25) { 
 // Try to simulate some common logic ops by using blend, if needed.
 // The shader might also need modification, the below function SimulateLogicOpShaderTypeIfNeeded
 // takes care of that.
-static void SimulateLogicOpIfNeeded(BlendFactor &srcBlend, BlendFactor &dstBlend, BlendEq &blendEq) {
+static bool SimulateLogicOpIfNeeded(BlendFactor &srcBlend, BlendFactor &dstBlend, BlendEq &blendEq) {
 	// Note: our shader solution applies logic ops BEFORE blending, not correctly after.
 	// This is however fine for the most common ones, like CLEAR/NOOP/SET, etc.
-	if (!gstate_c.Supports(GPU_SUPPORTS_LOGIC_OP)) {
-		if (gstate.isLogicOpEnabled()) {
-			switch (gstate.getLogicOp()) {
-			case GE_LOGIC_CLEAR:
-				srcBlend = BlendFactor::ZERO;
-				dstBlend = BlendFactor::ZERO;
-				blendEq = BlendEq::ADD;
-				break;
-			case GE_LOGIC_AND:
-			case GE_LOGIC_AND_REVERSE:
-				WARN_LOG_REPORT_ONCE(d3dLogicOpAnd, G3D, "Unsupported AND logic op: %x", gstate.getLogicOp());
-				break;
-			case GE_LOGIC_COPY:
-				// This is the same as off.
-				break;
-			case GE_LOGIC_COPY_INVERTED:
-				// Handled in the shader.
-				break;
-			case GE_LOGIC_AND_INVERTED:
-			case GE_LOGIC_NOR:
-			case GE_LOGIC_NAND:
-			case GE_LOGIC_EQUIV:
-				// Handled in the shader.
-				WARN_LOG_REPORT_ONCE(d3dLogicOpAndInverted, G3D, "Attempted invert for logic op: %x", gstate.getLogicOp());
-				break;
-			case GE_LOGIC_INVERTED:
-				srcBlend = BlendFactor::ONE;
-				dstBlend = BlendFactor::ONE;
-				blendEq = BlendEq::SUBTRACT;
-				WARN_LOG_REPORT_ONCE(d3dLogicOpInverted, G3D, "Attempted inverse for logic op: %x", gstate.getLogicOp());
-				break;
-			case GE_LOGIC_NOOP:
-				srcBlend = BlendFactor::ZERO;
-				dstBlend = BlendFactor::ONE;
-				blendEq = BlendEq::ADD;
-				break;
-			case GE_LOGIC_XOR:
-				WARN_LOG_REPORT_ONCE(d3dLogicOpOrXor, G3D, "Unsupported XOR logic op: %x", gstate.getLogicOp());
-				break;
-			case GE_LOGIC_OR:
-			case GE_LOGIC_OR_INVERTED:
-				// Inverted in shader.
-				dstBlend = BlendFactor::ONE;
-				WARN_LOG_REPORT_ONCE(d3dLogicOpOr, G3D, "Attempted or for logic op: %x", gstate.getLogicOp());
-				break;
-			case GE_LOGIC_OR_REVERSE:
-				WARN_LOG_REPORT_ONCE(d3dLogicOpOrReverse, G3D, "Unsupported OR REVERSE logic op: %x", gstate.getLogicOp());
-				break;
-			case GE_LOGIC_SET:
-				srcBlend = BlendFactor::ONE;
-				dstBlend = BlendFactor::ONE;
-				blendEq = BlendEq::ADD;
-				WARN_LOG_REPORT_ONCE(d3dLogicOpSet, G3D, "Attempted set for logic op: %x", gstate.getLogicOp());
-				break;
-			}
+	if (!gstate_c.Supports(GPU_SUPPORTS_LOGIC_OP) && gstate.isLogicOpEnabled()) {
+		switch (gstate.getLogicOp()) {
+		case GE_LOGIC_CLEAR:
+			srcBlend = BlendFactor::ZERO;
+			dstBlend = BlendFactor::ZERO;
+			blendEq = BlendEq::ADD;
+			return true;
+		case GE_LOGIC_AND:
+		case GE_LOGIC_AND_REVERSE:
+			WARN_LOG_REPORT_ONCE(d3dLogicOpAnd, G3D, "Unsupported AND logic op: %x", gstate.getLogicOp());
+			break;
+		case GE_LOGIC_COPY:
+			// This is the same as off.
+			break;
+		case GE_LOGIC_COPY_INVERTED:
+			// Handled in the shader.
+			break;
+		case GE_LOGIC_AND_INVERTED:
+		case GE_LOGIC_NOR:
+		case GE_LOGIC_NAND:
+		case GE_LOGIC_EQUIV:
+			// Handled in the shader.
+			WARN_LOG_REPORT_ONCE(d3dLogicOpAndInverted, G3D, "Attempted invert for logic op: %x", gstate.getLogicOp());
+			break;
+		case GE_LOGIC_INVERTED:
+			srcBlend = BlendFactor::ONE;
+			dstBlend = BlendFactor::ONE;
+			blendEq = BlendEq::SUBTRACT;
+			WARN_LOG_REPORT_ONCE(d3dLogicOpInverted, G3D, "Attempted inverse for logic op: %x", gstate.getLogicOp());
+			return true;
+		case GE_LOGIC_NOOP:
+			srcBlend = BlendFactor::ZERO;
+			dstBlend = BlendFactor::ONE;
+			blendEq = BlendEq::ADD;
+			return true;
+		case GE_LOGIC_XOR:
+			WARN_LOG_REPORT_ONCE(d3dLogicOpOrXor, G3D, "Unsupported XOR logic op: %x", gstate.getLogicOp());
+			break;
+		case GE_LOGIC_OR:
+		case GE_LOGIC_OR_INVERTED:
+			// Inverted in shader.
+			srcBlend = BlendFactor::ONE;
+			dstBlend = BlendFactor::ONE;
+			blendEq = BlendEq::ADD;
+			WARN_LOG_REPORT_ONCE(d3dLogicOpOr, G3D, "Attempted or for logic op: %x", gstate.getLogicOp());
+			return true;
+		case GE_LOGIC_OR_REVERSE:
+			WARN_LOG_REPORT_ONCE(d3dLogicOpOrReverse, G3D, "Unsupported OR REVERSE logic op: %x", gstate.getLogicOp());
+			break;
+		case GE_LOGIC_SET:
+			srcBlend = BlendFactor::ONE;
+			dstBlend = BlendFactor::ONE;
+			blendEq = BlendEq::ADD;
+			WARN_LOG_REPORT_ONCE(d3dLogicOpSet, G3D, "Attempted set for logic op: %x", gstate.getLogicOp());
+			return true;
 		}
 	}
+	return false;
 }
 
 // Choose the shader part of the above logic op fallback simulation.
@@ -950,7 +952,6 @@ void ApplyStencilReplaceAndLogicOpIgnoreBlend(ReplaceAlphaType replaceAlphaWithS
 	BlendFactor srcBlend = BlendFactor::ONE;
 	BlendFactor dstBlend = BlendFactor::ZERO;
 	BlendEq blendEq = BlendEq::ADD;
-	SimulateLogicOpIfNeeded(srcBlend, dstBlend, blendEq);
 
 	// We're not blending, but we may still want to "blend" for stencil.
 	// This is only useful for INCR/DECR/INVERT.  Others can write directly.
@@ -1077,6 +1078,12 @@ static void ConvertBlendState(GenericBlendState &blendState, bool forceReplaceBl
 	case REPLACE_BLEND_NO:
 		// We may still want to do something about stencil -> alpha.
 		ApplyStencilReplaceAndLogicOpIgnoreBlend(replaceAlphaWithStencil, blendState);
+
+		if (forceReplaceBlend) {
+			// If this is true, the logic and mask replacements will be applied, at least. In that case,
+			// we should not apply any logic op simulation.
+			blendState.simulateLogicOpType = LOGICOPTYPE_NORMAL;
+		}
 		return;
 
 	case REPLACE_BLEND_BLUE_TO_ALPHA:
@@ -1250,11 +1257,6 @@ static void ConvertBlendState(GenericBlendState &blendState, bool forceReplaceBl
 		colorEq = eqLookup[blendFuncEq];
 	} else {
 		colorEq = eqLookupNoMinMax[blendFuncEq];
-	}
-
-	// Attempt to apply simulated logic ops, if any and if needed.
-	if (!forceReplaceBlend) {
-		SimulateLogicOpIfNeeded(glBlendFuncA, glBlendFuncB, colorEq);
 	}
 
 	// The stencil-to-alpha in fragment shader doesn't apply here (blending is enabled), and we shouldn't
@@ -1581,5 +1583,20 @@ void ComputedPipelineState::Convert(bool shaderBitOpsSuppported) {
 	if (blendState.applyFramebufferRead || logicState.applyFramebufferRead) {
 		maskState.ConvertToShaderBlend();
 		logicState.ConvertToShaderBlend();
+	} else {
+		// If it isn't a read, we may need to change blending to apply the logic op.
+		logicState.ApplyToBlendState(blendState);
+	}
+}
+
+void GenericLogicState::ApplyToBlendState(GenericBlendState &blendState) {
+	if (SimulateLogicOpIfNeeded(blendState.srcColor, blendState.dstColor, blendState.eqColor)) {
+		if (!blendState.blendEnabled) {
+			// If it wasn't turned on, make sure it is now.
+			blendState.blendEnabled = true;
+			blendState.srcAlpha = BlendFactor::ONE;
+			blendState.dstAlpha = BlendFactor::ZERO;
+			blendState.eqAlpha = BlendEq::ADD;
+		}
 	}
 }

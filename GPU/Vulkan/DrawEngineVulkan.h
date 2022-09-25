@@ -81,8 +81,8 @@ public:
 		VAI_UNRELIABLE,  // never cache
 	};
 
-	uint64_t hash;
-	u32 minihash;
+	uint64_t hash = 0;
+	u32 minihash = 0;
 
 	// These will probably always be the same, but whatever.
 	VkBuffer vb = VK_NULL_HANDLE;
@@ -217,6 +217,8 @@ private:
 
 	// Secondary texture for shader blending
 	VkImageView boundSecondary_ = VK_NULL_HANDLE;
+	bool boundSecondaryIsInputAttachment_ = false;
+
 	// CLUT texture for shader depal
 	VkImageView boundDepal_ = VK_NULL_HANDLE;
 	bool boundDepalSmoothed_ = false;
@@ -234,6 +236,7 @@ private:
 		VkSampler sampler_;
 		VkBuffer base_, light_, bone_;  // All three UBO slots will be set to this. This will usually be identical
 		// for all draws in a frame, except when the buffer has to grow.
+		bool secondaryIsInputAttachment;
 	};
 
 	// We alternate between these.
@@ -281,7 +284,7 @@ private:
 	VulkanDynamicState dynState_{};
 
 	int tessOffset_ = 0;
-	bool fboTexNeedsBind_ = false;
+	FBOTexState fboTexBindState_ = FBO_TEX_NONE;
 
 	// Hardware tessellation
 	TessellationDataTransferVulkan *tessDataTransferVulkan;

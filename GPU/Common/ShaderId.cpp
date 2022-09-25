@@ -180,7 +180,7 @@ std::string FragmentShaderDesc(const FShaderID &id) {
 	if (id.Bit(FS_BIT_COLOR_DOUBLE)) desc << "2x ";
 	if (id.Bit(FS_BIT_FLATSHADE)) desc << "Flat ";
 	if (id.Bit(FS_BIT_BGRA_TEXTURE)) desc << "BGRA ";
-	switch ((ShaderDepalMode)id.Bit(FS_BIT_SHADER_DEPAL_MODE)) {
+	switch ((ShaderDepalMode)id.Bits(FS_BIT_SHADER_DEPAL_MODE, 2)) {
 	case ShaderDepalMode::OFF: break;
 	case ShaderDepalMode::NORMAL: desc << "Depal ";  break;
 	case ShaderDepalMode::SMOOTHED: desc << "SmoothDepal "; break;
@@ -349,13 +349,10 @@ void ComputeFragmentShaderID(FShaderID *id_out, const ComputedPipelineState &pip
 
 		id.SetBit(FS_BIT_COLOR_WRITEMASK, colorWriteMask);
 
-		if (g_Config.bVendorBugChecksEnabled) {
-			if (bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL)) {
-				id.SetBit(FS_BIT_NO_DEPTH_CANNOT_DISCARD_STENCIL, !IsStencilTestOutputDisabled() && !gstate.isDepthWriteEnabled());
-			} else if (bugs.Has(Draw::Bugs::MALI_STENCIL_DISCARD_BUG) && PSP_CoreParameter().compat.flags().MaliDepthStencilBugWorkaround) {
-				// Very similar driver bug to the Adreno one, with the same workaround (though might look into if there are cheaper ones!)
-				// Keeping the conditions separate since it can probably be made tighter.
-				id.SetBit(FS_BIT_NO_DEPTH_CANNOT_DISCARD_STENCIL, !IsStencilTestOutputDisabled() && (!gstate.isDepthTestEnabled() || !gstate.isDepthWriteEnabled()));
+		if (g_Config.bVendorBugChecksEnabled && bugs.Has(Draw::Bugs::NO_DEPTH_CANNOT_DISCARD_STENCIL)) {
+			bool stencilWithoutDepth = !IsStencilTestOutputDisabled() && (!gstate.isDepthTestEnabled() || !gstate.isDepthWriteEnabled());
+			if (stencilWithoutDepth) {
+				id.SetBit(FS_BIT_NO_DEPTH_CANNOT_DISCARD_STENCIL, stencilWithoutDepth);
 			}
 		}
 	}

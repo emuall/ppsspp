@@ -9,6 +9,7 @@
 #include <GLES3/gl3.h>
 #include <GLES3/gl3ext.h>
 
+XrFovf fov;
 XrView* projections;
 XrPosef invViewTransform[2];
 XrFrameState frameState = {};
@@ -293,7 +294,12 @@ bool VR_InitFrame( engine_t* engine ) {
 			projections));
 	//
 
+	fov = {};
 	for (int eye = 0; eye < ovrMaxNumEyes; eye++) {
+		fov.angleLeft += projections[eye].fov.angleLeft / 2.0f;
+		fov.angleRight += projections[eye].fov.angleRight / 2.0f;
+		fov.angleUp += projections[eye].fov.angleUp / 2.0f;
+		fov.angleDown += projections[eye].fov.angleDown / 2.0f;
 		invViewTransform[eye] = projections[eye].pose;
 	}
 
@@ -353,16 +359,17 @@ void VR_FinishFrame( engine_t* engine ) {
 		for (int eye = 0; eye < ovrMaxNumEyes; eye++) {
 			int imageLayer = engine->appState.Renderer.Multiview ? eye : 0;
 			ovrFramebuffer* frameBuffer = &engine->appState.Renderer.FrameBuffer[0];
-			XrFovf fov = projections[eye].fov;
-			if (vrMode == VR_MODE_MONO_6DOF) {
-				fov = projections[0].fov;
-			} else if (!engine->appState.Renderer.Multiview) {
-				frameBuffer = &engine->appState.Renderer.FrameBuffer[eye];
+			XrPosef pose = invViewTransform[0];
+			if (vrMode != VR_MODE_MONO_6DOF) {
+				if (!engine->appState.Renderer.Multiview) {
+					frameBuffer = &engine->appState.Renderer.FrameBuffer[eye];
+				}
+				pose = invViewTransform[eye];
 			}
 
 			memset(&projection_layer_elements[eye], 0, sizeof(XrCompositionLayerProjectionView));
 			projection_layer_elements[eye].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-			projection_layer_elements[eye].pose = invViewTransform[eye];
+			projection_layer_elements[eye].pose = pose;
 			projection_layer_elements[eye].fov = fov;
 
 			memset(&projection_layer_elements[eye].subImage, 0, sizeof(XrSwapchainSubImage));
@@ -463,7 +470,6 @@ void VR_BindFramebuffer(engine_t *engine) {
 ovrMatrix4f VR_GetMatrix( VRMatrix matrix ) {
 	ovrMatrix4f output;
 	if ((matrix == VR_PROJECTION_MATRIX_LEFT_EYE) || (matrix == VR_PROJECTION_MATRIX_RIGHT_EYE)) {
-		XrFovf fov = matrix == VR_PROJECTION_MATRIX_LEFT_EYE ? projections[0].fov : projections[1].fov;
 		float near = (float)vrConfig[VR_CONFIG_FOV_SCALE] / 200.0f;
 		output = ovrMatrix4f_CreateProjectionFov(fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown, near, 0.0f );
 	} else if ((matrix == VR_VIEW_MATRIX_LEFT_EYE) || (matrix == VR_VIEW_MATRIX_RIGHT_EYE)) {
@@ -500,9 +506,16 @@ ovrMatrix4f VR_GetMatrix( VRMatrix matrix ) {
 			output.M[2][3] -= hmdposition.z * (vrConfig[VR_CONFIG_MIRROR_AXIS_Z] ? -1.0f : 1.0f) * scale;
 		}
 		if (vrConfig[VR_CONFIG_6DOF_PRECISE] && (matrix == VR_VIEW_MATRIX_RIGHT_EYE)) {
-			output.M[0][3] += (invViewTransform[1].position.x - invViewTransform[0].position.x) * scale;
-			output.M[1][3] += (invViewTransform[1].position.y - invViewTransform[0].position.y) * scale;
-			output.M[2][3] += (invViewTransform[1].position.z - invViewTransform[0].position.z) * scale;
+			float dx = fabs(invViewTransform[1].position.x - invViewTransform[0].position.x);
+			float dy = fabs(invViewTransform[1].position.y - invViewTransform[0].position.y);
+			float dz = fabs(invViewTransform[1].position.z - invViewTransform[0].position.z);
+			float ipd = sqrt(dx * dx + dy * dy + dz * dz);
+			XrVector3f separation = {ipd * scale, 0.0f, 0.0f};
+			separation = XrQuaternionf_Rotate(invView.orientation, separation);
+			separation = XrVector3f_ScalarMultiply(separation, vrConfig[VR_CONFIG_MIRROR_AXIS_Z] ? -1.0f : 1.0f);
+			output.M[0][3] -= separation.x;
+			output.M[1][3] -= separation.y;
+			output.M[2][3] -= separation.z;
 		}
 	} else {
 		assert(false);

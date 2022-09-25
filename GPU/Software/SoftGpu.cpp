@@ -361,7 +361,7 @@ const SoftwareCommandTableEntry softgpuCommandTable[] = {
 	{ GE_CMD_VTCT },
 	{ GE_CMD_VTCQ },
 	{ GE_CMD_VCV },
-	{ GE_CMD_VAP, FLAG_EXECUTE, SoftDirty::NONE, &GPUCommon::Execute_ImmVertexAlphaPrim },
+	{ GE_CMD_VAP, FLAG_EXECUTE, SoftDirty::NONE, &SoftGPU::Execute_ImmVertexAlphaPrim },
 	{ GE_CMD_VFC },
 	{ GE_CMD_VSCV },
 
@@ -490,14 +490,16 @@ void SoftGPU::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat for
 
 DSStretch g_DarkStalkerStretch;
 
-void SoftGPU::ConvertTextureDescFrom16(Draw::TextureDesc &desc, int srcwidth, int srcheight, u8 *overrideData) {
+void SoftGPU::ConvertTextureDescFrom16(Draw::TextureDesc &desc, int srcwidth, int srcheight, const uint16_t *overrideData) {
 	// TODO: This should probably be converted in a shader instead..
 	fbTexBuffer_.resize(srcwidth * srcheight);
-	FormatBuffer displayBuffer;
-	displayBuffer.data = overrideData ? overrideData : Memory::GetPointerWrite(displayFramebuf_);
+	const uint16_t *displayBuffer = overrideData;
+	if (!displayBuffer)
+		displayBuffer = (const uint16_t *)Memory::GetPointer(displayFramebuf_);
+
 	for (int y = 0; y < srcheight; ++y) {
 		u32 *buf_line = &fbTexBuffer_[y * srcwidth];
-		const u16 *fb_line = &displayBuffer.as16[y * displayStride_];
+		const u16 *fb_line = &displayBuffer[y * displayStride_];
 
 		switch (displayFormat_) {
 		case GE_FORMAT_565:
@@ -557,7 +559,7 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 	bool hasPostShader = presentation_ && presentation_->HasPostShader();
 
 	if (PSP_CoreParameter().compat.flags().DarkStalkersPresentHack && displayFormat_ == GE_FORMAT_5551 && g_DarkStalkerStretch != DSStretch::Off) {
-		u8 *data = Memory::GetPointerWrite(0x04088000);
+		const u8 *data = Memory::GetPointerWrite(0x04088000);
 		bool fillDesc = true;
 		if (draw_->GetDataFormatSupport(Draw::DataFormat::A1B5G5R5_UNORM_PACK16) & Draw::FMT_TEXTURE) {
 			// The perfect one.
@@ -567,7 +569,7 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 			desc.format = Draw::DataFormat::A1R5G5B5_UNORM_PACK16;
 			outputFlags |= OutputFlags::RB_SWIZZLE;
 		} else {
-			ConvertTextureDescFrom16(desc, srcwidth, srcheight, data);
+			ConvertTextureDescFrom16(desc, srcwidth, srcheight, (const uint16_t *)data);
 			fillDesc = false;
 		}
 		if (fillDesc) {
@@ -586,13 +588,13 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 		hasImage = false;
 		u1 = 1.0f;
 	} else if (displayFormat_ == GE_FORMAT_8888) {
-		u8 *data = Memory::GetPointerWrite(displayFramebuf_);
+		const u8 *data = Memory::GetPointer(displayFramebuf_);
 		desc.width = displayStride_ == 0 ? srcwidth : displayStride_;
 		desc.height = srcheight;
 		desc.initData.push_back(data);
 		desc.format = Draw::DataFormat::R8G8B8A8_UNORM;
 	} else if (displayFormat_ == GE_FORMAT_5551) {
-		const u8 *data = Memory::GetPointerWrite(displayFramebuf_);
+		const u8 *data = Memory::GetPointer(displayFramebuf_);
 		bool fillDesc = true;
 		if (draw_->GetDataFormatSupport(Draw::DataFormat::A1B5G5R5_UNORM_PACK16) & Draw::FMT_TEXTURE) {
 			// The perfect one.
@@ -639,6 +641,7 @@ void SoftGPU::CopyToCurrentFboFromDisplayRam(int srcwidth, int srcheight) {
 }
 
 void SoftGPU::CopyDisplayToOutput(bool reallyDirty) {
+	drawEngine_->transformUnit.Flush("output");
 	// The display always shows 480x272.
 	CopyToCurrentFboFromDisplayRam(FB_WIDTH, FB_HEIGHT);
 	MarkDirty(displayFramebuf_, displayStride_, 272, displayFormat_, SoftGPUVRAMDirty::CLEAR);
@@ -650,7 +653,7 @@ void SoftGPU::MarkDirty(uint32_t addr, uint32_t stride, uint32_t height, GEBuffe
 }
 
 void SoftGPU::MarkDirty(uint32_t addr, uint32_t bytes, SoftGPUVRAMDirty value) {
-	// Don't bother tracking if frameskipping.
+	// Only bother tracking if frameskipping.
 	if (g_Config.iFrameSkip == 0)
 		return;
 	if (!Memory::IsVRAMAddress(addr) || !Memory::IsVRAMAddress(addr + bytes - 1))
@@ -1005,19 +1008,24 @@ void SoftGPU::Execute_LoadClut(u32 op, u32 diff) {
 
 void SoftGPU::Execute_FramebufPtr(u32 op, u32 diff) {
 	// We assume fb.data won't change while we're drawing.
-	drawEngine_->transformUnit.Flush("framebuf");
-	fb.data = Memory::GetPointerWrite(gstate.getFrameBufAddress());
+	if (diff) {
+		drawEngine_->transformUnit.Flush("framebuf");
+		fb.data = Memory::GetPointerWrite(gstate.getFrameBufAddress());
+	}
 }
 
 void SoftGPU::Execute_FramebufFormat(u32 op, u32 diff) {
 	// We should flush, because ranges within bins may change.
-	drawEngine_->transformUnit.Flush("framebuf");
+	if (diff)
+		drawEngine_->transformUnit.Flush("framebuf");
 }
 
 void SoftGPU::Execute_ZbufPtr(u32 op, u32 diff) {
 	// We assume depthbuf.data won't change while we're drawing.
-	drawEngine_->transformUnit.Flush("depthbuf");
-	depthbuf.data = Memory::GetPointerWrite(gstate.getDepthBufAddress());
+	if (diff) {
+		drawEngine_->transformUnit.Flush("depthbuf");
+		depthbuf.data = Memory::GetPointerWrite(gstate.getDepthBufAddress());
+	}
 }
 
 void SoftGPU::Execute_VertexType(u32 op, u32 diff) {
@@ -1109,6 +1117,12 @@ void SoftGPU::Execute_BoneMtxData(u32 op, u32 diff) {
 	gstate.boneMatrixData  = GE_CMD_BONEMATRIXDATA << 24;
 }
 
+void SoftGPU::Execute_ImmVertexAlphaPrim(u32 op, u32 diff) {
+	GPUCommon::Execute_ImmVertexAlphaPrim(op, diff);
+	// We won't flush as often as hardware renderers, so we want to flush right away.
+	FlushImm();
+}
+
 void SoftGPU::Execute_Call(u32 op, u32 diff) {
 	PROFILE_THIS_SCOPE("gpu_call");
 
@@ -1136,6 +1150,18 @@ void SoftGPU::Execute_Call(u32 op, u32 diff) {
 void SoftGPU::FinishDeferred() {
 	// Need to flush before going back to CPU, so drawing is appropriately visible.
 	drawEngine_->transformUnit.Flush("finish");
+}
+
+int SoftGPU::ListSync(int listid, int mode) {
+	// Take this as a cue that we need to finish drawing.
+	drawEngine_->transformUnit.Flush("listsync");
+	return GPUCommon::ListSync(listid, mode);
+}
+
+u32 SoftGPU::DrawSync(int mode) {
+	// Take this as a cue that we need to finish drawing.
+	drawEngine_->transformUnit.Flush("drawsync");
+	return GPUCommon::DrawSync(mode);
 }
 
 void SoftGPU::GetStats(char *buffer, size_t bufsize) {
@@ -1223,18 +1249,19 @@ bool SoftGPU::GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferT
 	int stride = gstate.FrameBufStride();
 	DrawingCoords size = GetTargetSize(stride);
 	GEBufferFormat fmt = gstate.FrameBufFormat();
+	const u8 *src = fb.data;
 
 	if (type == GPU_DBG_FRAMEBUF_DISPLAY) {
 		size.x = 480;
 		size.y = 272;
 		stride = displayStride_;
 		fmt = displayFormat_;
+		src = Memory::GetPointer(displayFramebuf_);
 	}
 
 	buffer.Allocate(size.x, size.y, fmt);
 
 	const int depth = fmt == GE_FORMAT_8888 ? 4 : 2;
-	const u8 *src = fb.data;
 	u8 *dst = buffer.GetData();
 	const int byteWidth = size.x * depth;
 	for (int16_t y = 0; y < size.y; ++y) {
