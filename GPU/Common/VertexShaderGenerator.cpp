@@ -127,9 +127,6 @@ static const char * const boneWeightDecl[9] = {
 	"layout(location = 3) in vec4 w1;\nlayout(location = 4) in vec4 w2;\n",
 };
 
-extern const char *vulkan_glsl_preamble_vs;
-extern const char *hlsl_preamble_vs;
-
 bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguageDesc &compat, Draw::Bugs bugs, uint32_t *attrMask, uint64_t *uniformMask, std::string *errorString) {
 	*attrMask = 0;
 	*uniformMask = 0;
@@ -234,9 +231,8 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 
 	bool vertexRangeCulling = id.Bit(VS_BIT_VERTEX_RANGE_CULLING) && !isModeThrough;
 	bool clipClampedDepth = !isModeThrough && gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP) && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE);
-	const char *vertexRangeClipSuffix = "[0]";
-	if (vertexRangeCulling && clipClampedDepth)
-		vertexRangeClipSuffix = "[2]";
+	const char *clipClampedDepthSuffix = "[0]";
+	const char *vertexRangeClipSuffix = clipClampedDepth ? "[1]" : "[0]";
 
 	if (compat.shaderLanguage == GLSL_VULKAN) {
 		WRITE(p, "\n");
@@ -422,12 +418,12 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 			WRITE(p, "  vec4 gl_Position   : SV_Position;\n");
 			bool clipRange = vertexRangeCulling && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE);
 			if (clipClampedDepth && clipRange) {
-				WRITE(p, "  float3 gl_ClipDistance : SV_ClipDistance;\n");
-				vertexRangeClipSuffix = ".z";
-			} else if (clipClampedDepth) {
 				WRITE(p, "  float2 gl_ClipDistance : SV_ClipDistance;\n");
-			} else if (clipRange) {
+				clipClampedDepthSuffix = ".x";
+				vertexRangeClipSuffix = ".y";
+			} else if (clipClampedDepth || clipRange) {
 				WRITE(p, "  float gl_ClipDistance : SV_ClipDistance;\n");
+				clipClampedDepthSuffix = "";
 				vertexRangeClipSuffix = "";
 			}
 			if (vertexRangeCulling && gstate_c.Supports(GPU_SUPPORTS_CULL_DISTANCE)) {
@@ -1270,28 +1266,21 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 	}
 
 	if (clipClampedDepth) {
-		const char *clip0 = compat.shaderLanguage == HLSL_D3D11 ? ".x" : "[0]";
-		const char *clip1 = compat.shaderLanguage == HLSL_D3D11 ? ".y" : "[1]";
-
 		// This should clip against minz, but only when it's above zero.
 		if (ShaderLanguageIsOpenGL(compat.shaderLanguage)) {
 			// On OpenGL/GLES, these values account for the -1 -> 1 range.
 			WRITE(p, "  if (u_depthRange.y - u_depthRange.x >= 1.0) {\n");
-			WRITE(p, "    %sgl_ClipDistance%s = outPos.w + outPos.z;\n", compat.vsOutPrefix, clip0);
+			WRITE(p, "    %sgl_ClipDistance%s = outPos.w + outPos.z;\n", compat.vsOutPrefix, clipClampedDepthSuffix);
 		} else {
 			// Everywhere else, it's 0 -> 1, simpler.
 			WRITE(p, "  if (u_depthRange.y >= 1.0) {\n");
-			WRITE(p, "    %sgl_ClipDistance%s = outPos.z;\n", compat.vsOutPrefix, clip0);
+			WRITE(p, "    %sgl_ClipDistance%s = outPos.z;\n", compat.vsOutPrefix, clipClampedDepthSuffix);
 		}
-		WRITE(p, "  } else {\n");
-		WRITE(p, "    %sgl_ClipDistance%s = 0.0;\n", compat.vsOutPrefix, clip0);
-		WRITE(p, "  }\n");
-
 		// This is similar, but for maxz when it's below 65535.0.  -1/0 don't matter here.
-		WRITE(p, "  if (u_depthRange.x + u_depthRange.y <= 65534.0) {\n");
-		WRITE(p, "    %sgl_ClipDistance%s = outPos.w - outPos.z;\n", compat.vsOutPrefix, clip1);
+		WRITE(p, "  } else if (u_depthRange.x + u_depthRange.y <= 65534.0) {\n");
+		WRITE(p, "    %sgl_ClipDistance%s = outPos.w - outPos.z;\n", compat.vsOutPrefix, clipClampedDepthSuffix);
 		WRITE(p, "  } else {\n");
-		WRITE(p, "    %sgl_ClipDistance%s = 0.0;\n", compat.vsOutPrefix, clip1);
+		WRITE(p, "    %sgl_ClipDistance%s = 0.0;\n", compat.vsOutPrefix, clipClampedDepthSuffix);
 		WRITE(p, "  }\n");
 	}
 
@@ -1302,7 +1291,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		WRITE(p, "  if (u_cullRangeMin.w <= 0.0 || projZ * outPos.w > -outPos.w) {\n");
 		const char *outMin = "projPos.x < u_cullRangeMin.x || projPos.y < u_cullRangeMin.y";
 		const char *outMax = "projPos.x > u_cullRangeMax.x || projPos.y > u_cullRangeMax.y";
-		WRITE(p, "    if (%s || %s) {\n", outMin, outMax);
+		WRITE(p, "    if ((%s) || (%s)) {\n", outMin, outMax);
 		WRITE(p, "      outPos.xyzw = u_cullRangeMax.wwww;\n");
 		WRITE(p, "    }\n");
 		WRITE(p, "  }\n");
@@ -1315,7 +1304,7 @@ bool GenerateVertexShader(const VShaderID &id, char *buffer, const ShaderLanguag
 		const char *cull0 = compat.shaderLanguage == HLSL_D3D11 ? ".x" : "[0]";
 		const char *cull1 = compat.shaderLanguage == HLSL_D3D11 ? ".y" : "[1]";
 		if (gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE)) {
-			// TODO: Not rectangles...
+			// TODO: Ignore triangles from GE_PRIM_RECTANGLES in transform mode, which should not clip to neg z.
 			WRITE(p, "  %sgl_ClipDistance%s = projZ * outPos.w + outPos.w;\n", compat.vsOutPrefix, vertexRangeClipSuffix);
 		}
 		if (gstate_c.Supports(GPU_SUPPORTS_CULL_DISTANCE)) {

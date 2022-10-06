@@ -227,7 +227,7 @@ std::string FragmentShaderDesc(const FShaderID &id) {
 		case STENCIL_VALUE_INCR_4: desc << "StenIncr4 "; break;
 		case STENCIL_VALUE_INCR_8: desc << "StenIncr8 "; break;
 		case STENCIL_VALUE_DECR_4: desc << "StenDecr4 "; break;
-		case STENCIL_VALUE_DECR_8: desc << "StenDecr4 "; break;
+		case STENCIL_VALUE_DECR_8: desc << "StenDecr8 "; break;
 		default: desc << "StenUnknown "; break;
 		}
 	} else if (id.Bit(FS_BIT_REPLACE_ALPHA_WITH_STENCIL_TYPE)) {
@@ -361,6 +361,50 @@ void ComputeFragmentShaderID(FShaderID *id_out, const ComputedPipelineState &pip
 			if (stencilWithoutDepth) {
 				id.SetBit(FS_BIT_NO_DEPTH_CANNOT_DISCARD_STENCIL, stencilWithoutDepth);
 			}
+		}
+	}
+
+	*id_out = id;
+}
+
+std::string GeometryShaderDesc(const GShaderID &id) {
+	std::stringstream desc;
+	desc << StringFromFormat("%08x:%08x ", id.d[1], id.d[0]);
+	if (id.Bit(GS_BIT_ENABLED)) desc << "ENABLED ";
+	if (id.Bit(GS_BIT_DO_TEXTURE)) desc << "TEX ";
+	if (id.Bit(GS_BIT_LMODE)) desc << "LMODE ";
+	return desc.str();
+}
+
+void ComputeGeometryShaderID(GShaderID *id_out, const Draw::Bugs &bugs, int prim) {
+	GShaderID id;
+
+	bool isModeThrough = gstate.isModeThrough();
+	bool isCurve = gstate_c.submitType != SubmitType::DRAW;
+	bool isTriangle = prim == GE_PRIM_TRIANGLES || prim == GE_PRIM_TRIANGLE_FAN || prim == GE_PRIM_TRIANGLE_STRIP;
+
+	bool vertexRangeCulling = !isCurve;
+	bool clipClampedDepth = gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP) && !gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE);
+
+	// If we're not using GS culling, return a zero ID.
+	// Also, only use this for triangle primitives.
+	if ((!vertexRangeCulling && !clipClampedDepth) || isModeThrough || !isTriangle || !gstate_c.Supports(GPU_SUPPORTS_GS_CULLING)) {
+		*id_out = id;
+		return;
+	}
+
+	id.SetBit(GS_BIT_ENABLED, true);
+	// Vertex range culling doesn't seem tno happen for spline/bezier, see #11692.
+	id.SetBit(GS_BIT_CURVE, isCurve);
+
+	if (gstate.isModeClear()) {
+		// No attribute bits.
+	} else {
+		bool lmode = gstate.isUsingSecondaryColor() && gstate.isLightingEnabled() && !isModeThrough;
+
+		id.SetBit(GS_BIT_LMODE, lmode);
+		if (gstate.isTextureMapEnabled()) {
+			id.SetBit(GS_BIT_DO_TEXTURE);
 		}
 	}
 

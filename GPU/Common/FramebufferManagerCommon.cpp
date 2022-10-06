@@ -112,7 +112,9 @@ void FramebufferManagerCommon::BeginFrame() {
 }
 
 void FramebufferManagerCommon::SetDisplayFramebuffer(u32 framebuf, u32 stride, GEBufferFormat format) {
-	displayFramebufPtr_ = framebuf;
+	displayFramebufPtr_ = framebuf & 0x3FFFFFFF;
+	if (Memory::IsVRAMAddress(displayFramebufPtr_))
+		displayFramebufPtr_ = framebuf & 0x041FFFFF;
 	displayStride_ = stride;
 	displayFormat_ = format;
 	GPUDebug::NotifyDisplay(framebuf, stride, format);
@@ -121,6 +123,8 @@ void FramebufferManagerCommon::SetDisplayFramebuffer(u32 framebuf, u32 stride, G
 
 VirtualFramebuffer *FramebufferManagerCommon::GetVFBAt(u32 addr) const {
 	addr &= 0x3FFFFFFF;
+	if (Memory::IsVRAMAddress(addr))
+		addr &= 0x041FFFFF;
 	VirtualFramebuffer *match = nullptr;
 	for (auto vfb : vfbs_) {
 		if (vfb->fb_address == addr) {
@@ -134,6 +138,9 @@ VirtualFramebuffer *FramebufferManagerCommon::GetVFBAt(u32 addr) const {
 }
 
 VirtualFramebuffer *FramebufferManagerCommon::GetExactVFB(u32 addr, int stride, GEBufferFormat format) const {
+	addr &= 0x3FFFFFFF;
+	if (Memory::IsVRAMAddress(addr))
+		addr &= 0x041FFFFF;
 	VirtualFramebuffer *newest = nullptr;
 	for (auto vfb : vfbs_) {
 		if (vfb->fb_address == addr && vfb->fb_stride == stride && vfb->fb_format == format) {
@@ -150,6 +157,9 @@ VirtualFramebuffer *FramebufferManagerCommon::GetExactVFB(u32 addr, int stride, 
 }
 
 VirtualFramebuffer *FramebufferManagerCommon::ResolveVFB(u32 addr, int stride, GEBufferFormat format) {
+	addr &= 0x3FFFFFFF;
+	if (Memory::IsVRAMAddress(addr))
+		addr &= 0x041FFFFF;
 	// Find the newest one matching addr and stride.
 	VirtualFramebuffer *newest = nullptr;
 	for (auto vfb : vfbs_) {
@@ -235,7 +245,7 @@ void FramebufferManagerCommon::EstimateDrawingSize(u32 fb_address, int fb_stride
 		// The majority of the time, these are equal.  If not, let's check what we know.
 		u32 nearest_address = 0xFFFFFFFF;
 		for (auto vfb : vfbs_) {
-			const u32 other_address = vfb->fb_address & 0x3FFFFFFF;
+			const u32 other_address = vfb->fb_address;
 			if (other_address > fb_address && other_address < nearest_address) {
 				nearest_address = other_address;
 			}
@@ -296,10 +306,11 @@ void FramebufferManagerCommon::EstimateDrawingSize(u32 fb_address, int fb_stride
 }
 
 void GetFramebufferHeuristicInputs(FramebufferHeuristicParams *params, const GPUgstate &gstate) {
-	params->fb_address = (gstate.getFrameBufRawAddress() & 0x3FFFFFFF) | 0x04000000;  // GetFramebufferHeuristicInputs is only called from rendering, and thus, it's VRAM.
+	// GetFramebufferHeuristicInputs is only called from rendering, and thus, it's VRAM.
+	params->fb_address = gstate.getFrameBufRawAddress() | 0x04000000;
 	params->fb_stride = gstate.FrameBufStride();
 
-	params->z_address = (gstate.getDepthBufRawAddress() & 0x3FFFFFFF) | 0x04000000;
+	params->z_address = gstate.getDepthBufRawAddress() | 0x04000000;
 	params->z_stride = gstate.DepthBufStride();
 
 	if (params->z_address == params->fb_address) {
@@ -555,7 +566,7 @@ void FramebufferManagerCommon::SetDepthFrameBuffer(bool isClearingDepth) {
 	bool newlyUsingDepth = (currentRenderVfb_->usageFlags & FB_USAGE_RENDER_DEPTH) == 0;
 	currentRenderVfb_->usageFlags |= FB_USAGE_RENDER_DEPTH;
 
-	uint32_t boundDepthBuffer = gstate.getDepthBufAddress() & 0x3FFFFFFF;
+	uint32_t boundDepthBuffer = gstate.getDepthBufRawAddress() | 0x04000000;
 	if (currentRenderVfb_->z_address != boundDepthBuffer) {
 		WARN_LOG_N_TIMES(z_reassign, 5, G3D, "Framebuffer at %08x/%d has switched associated depth buffer from %08x to %08x, updating.",
 			currentRenderVfb_->fb_address, currentRenderVfb_->fb_stride, currentRenderVfb_->z_address, boundDepthBuffer);
@@ -563,9 +574,12 @@ void FramebufferManagerCommon::SetDepthFrameBuffer(bool isClearingDepth) {
 		// Technically, here we should copy away the depth buffer to another framebuffer that uses that z_address, or maybe
 		// even write it back to RAM. However, this is rare. Silent Hill is one example, see #16126.
 		currentRenderVfb_->z_address = boundDepthBuffer;
-		char tag[128];
-		FormatFramebufferName(currentRenderVfb_, tag, sizeof(tag));
-		currentRenderVfb_->fbo->UpdateTag(tag);
+
+		if (currentRenderVfb_->fbo) {
+			char tag[128];
+			FormatFramebufferName(currentRenderVfb_, tag, sizeof(tag));
+			currentRenderVfb_->fbo->UpdateTag(tag);
+		}
 	}
 
 	// If this first draw call is anything other than a clear, "resolve" the depth buffer,
@@ -575,7 +589,7 @@ void FramebufferManagerCommon::SetDepthFrameBuffer(bool isClearingDepth) {
 
 		// Need to upload the first line of depth buffers, for Burnout Dominator lens flares. See issue #11100 and comments to #16081.
 		// Might make this more generic and upload the whole depth buffer if we find it's needed for something.
-		if (newlyUsingDepth) {
+		if (newlyUsingDepth && draw_->GetDeviceCaps().fragmentShaderDepthWriteSupported) {
 			// Sanity check the depth buffer pointer.
 			if (Memory::IsValidRange(currentRenderVfb_->z_address, currentRenderVfb_->width * 2)) {
 				const u16 *src = (const u16 *)Memory::GetPointerUnchecked(currentRenderVfb_->z_address);
@@ -1034,6 +1048,8 @@ void FramebufferManagerCommon::NotifyVideoUpload(u32 addr, int size, int stride,
 void FramebufferManagerCommon::UpdateFromMemory(u32 addr, int size) {
 	// Take off the uncached flag from the address. Not to be confused with the start of VRAM.
 	addr &= 0x3FFFFFFF;
+	if (Memory::IsVRAMAddress(addr))
+		addr &= 0x041FFFFF;
 	// TODO: Could go through all FBOs, but probably not important?
 	// TODO: Could also check for inner changes, but video is most important.
 	// TODO: This shouldn't care if it's a display framebuf or not, should work exactly the same.
@@ -1354,10 +1370,16 @@ void FramebufferManagerCommon::CopyDisplayToOutput(bool reallyDirty) {
 		// Let's search for a framebuf within this range. Note that we also look for
 		// "framebuffers" sitting in RAM (created from block transfer or similar) so we only take off the kernel
 		// and uncached bits of the address when comparing.
-		const u32 addr = fbaddr & 0x3FFFFFFF;
+		const u32 addr = fbaddr;
 		for (auto v : vfbs_) {
-			const u32 v_addr = v->fb_address & 0x3FFFFFFF;
+			const u32 v_addr = v->fb_address;
 			const u32 v_size = ColorBufferByteSize(v);
+
+			if (v->fb_format != displayFormat_ || v->fb_stride != displayStride_) {
+				// Displaying a buffer of the wrong format or stride is nonsense, ignore it.
+				continue;
+			}
+
 			if (addr >= v_addr && addr < v_addr + v_size) {
 				const u32 dstBpp = BufferFormatBytesPerPixel(v->fb_format);
 				const u32 v_offsetX = ((addr - v_addr) / dstBpp) % v->fb_stride;
@@ -1615,18 +1637,27 @@ void FramebufferManagerCommon::ResizeFramebufFBO(VirtualFramebuffer *vfb, int w,
 
 // This is called from detected memcopies and framebuffer initialization from VRAM. Not block transfers.
 // MotoGP goes this path so we need to catch those copies here.
-bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size, bool isMemset, u32 skipDrawReason) {
+bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size, GPUCopyFlag flags, u32 skipDrawReason) {
 	if (size == 0) {
 		return false;
 	}
 
 	dst &= 0x3FFFFFFF;
 	src &= 0x3FFFFFFF;
+	if (Memory::IsVRAMAddress(dst))
+		dst &= 0x041FFFFF;
+	if (Memory::IsVRAMAddress(src))
+		src &= 0x041FFFFF;
 
-	// TODO: Merge the below into FindTransferFramebuffer
+	// TODO: Merge the below into FindTransferFramebuffer.
+	// Or at least this should be like the other ones, gathering possible candidates
+	// with the ability to list them out for debugging.
 
-	VirtualFramebuffer *dstBuffer = 0;
-	VirtualFramebuffer *srcBuffer = 0;
+	VirtualFramebuffer *dstBuffer = nullptr;
+	VirtualFramebuffer *srcBuffer = nullptr;
+	bool ignoreDstBuffer = flags & GPUCopyFlag::FORCE_DST_MEM;
+	bool ignoreSrcBuffer = flags & (GPUCopyFlag::FORCE_SRC_MEM | GPUCopyFlag::MEMSET);
+
 	u32 dstY = (u32)-1;
 	u32 dstH = 0;
 	u32 srcY = (u32)-1;
@@ -1637,13 +1668,21 @@ bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size,
 		}
 
 		// We only remove the kernel and uncached bits when comparing.
-		const u32 vfb_address = vfb->fb_address & 0x3FFFFFFF;
+		const u32 vfb_address = vfb->fb_address;
 		const u32 vfb_size = ColorBufferByteSize(vfb);
 		const u32 vfb_bpp = BufferFormatBytesPerPixel(vfb->fb_format);
 		const u32 vfb_byteStride = vfb->fb_stride * vfb_bpp;
 		const int vfb_byteWidth = vfb->width * vfb_bpp;
 
-		if (dst >= vfb_address && (dst + size <= vfb_address + vfb_size || dst == vfb_address)) {
+		// Heuristic to try to prevent potential glitches with video playback.
+		if (!ignoreDstBuffer && vfb_address == dst && (size == 0x44000 && vfb_size == 0x88000 || size == 0x88000 && vfb_size == 0x44000)) {
+			// Not likely to be a correct color format copy for this buffer. Ignore it, there will either be RAM
+			// that can be displayed from, or another matching buffer with the right format if rendering is going on.
+			WARN_LOG_N_TIMES(notify_copy_2x, 5, G3D, "Framebuffer size %08x conspicuously not matching copy size %08x in NotifyFramebufferCopy. Ignoring.", size, vfb_size);
+			continue;
+		}
+
+		if (!ignoreDstBuffer && dst >= vfb_address && (dst + size <= vfb_address + vfb_size || dst == vfb_address)) {
 			const u32 offset = dst - vfb_address;
 			const u32 yOffset = offset / vfb_byteStride;
 			if ((offset % vfb_byteStride) == 0 && (size == vfb_byteWidth || (size % vfb_byteStride) == 0) && yOffset < dstY) {
@@ -1653,7 +1692,7 @@ bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size,
 			}
 		}
 
-		if (src >= vfb_address && (src + size <= vfb_address + vfb_size || src == vfb_address)) {
+		if (!ignoreSrcBuffer && src >= vfb_address && (src + size <= vfb_address + vfb_size || src == vfb_address)) {
 			const u32 offset = src - vfb_address;
 			const u32 yOffset = offset / vfb_byteStride;
 			if ((offset % vfb_byteStride) == 0 && (size == vfb_byteWidth || (size % vfb_byteStride) == 0) && yOffset < srcY) {
@@ -1695,7 +1734,7 @@ bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size,
 		dstBuffer->last_frame_used = gpuStats.numFlips;
 	}
 
-	if (dstBuffer && srcBuffer && !isMemset) {
+	if (dstBuffer && srcBuffer) {
 		if (srcBuffer == dstBuffer) {
 			WARN_LOG_ONCE(dstsrccpy, G3D, "Intra-buffer memcpy (not supported) %08x -> %08x (size: %x)", src, dst, size);
 		} else {
@@ -1707,7 +1746,7 @@ bool FramebufferManagerCommon::NotifyFramebufferCopy(u32 src, u32 dst, int size,
 		}
 		return false;
 	} else if (dstBuffer) {
-		if (isMemset) {
+		if (flags & GPUCopyFlag::MEMSET) {
 			gpuStats.numClears++;
 		}
 		WARN_LOG_ONCE(btucpy, G3D, "Memcpy fbo upload %08x -> %08x (size: %x)", src, dst, size);
@@ -1742,6 +1781,8 @@ std::string BlockTransferRect::ToString() const {
 // for depth data yet.
 bool FramebufferManagerCommon::FindTransferFramebuffer(u32 basePtr, int stride_pixels, int x_pixels, int y, int w_pixels, int h, int bpp, bool destination, BlockTransferRect *rect) {
 	basePtr &= 0x3FFFFFFF;
+	if (Memory::IsVRAMAddress(basePtr))
+		basePtr &= 0x041FFFFF;
 	rect->vfb = nullptr;
 
 	if (!stride_pixels) {
@@ -1765,11 +1806,11 @@ bool FramebufferManagerCommon::FindTransferFramebuffer(u32 basePtr, int stride_p
 		// Check for easily detected depth copies for logging purposes.
 		// Depth copies are not that useful though because you manually need to account for swizzle, so
 		// not sure if games will use them.
-		if ((vfb->z_address & 0x3FFFFFFF) == basePtr) {
+		if (vfb->z_address == basePtr) {
 			WARN_LOG_N_TIMES(z_xfer, 5, G3D, "FindTransferFramebuffer: found matching depth buffer, %08x (dest=%d, bpp=%d)", basePtr, (int)destination, bpp);
 		}
 
-		const u32 vfb_address = vfb->fb_address & 0x3FFFFFFF;
+		const u32 vfb_address = vfb->fb_address;
 		const u32 vfb_size = ColorBufferByteSize(vfb);
 
 		if (basePtr < vfb_address || basePtr >= vfb_address + vfb_size) {
@@ -1882,7 +1923,8 @@ VirtualFramebuffer *FramebufferManagerCommon::CreateRAMFramebuffer(uint32_t fbAd
 	// create a new one each frame.
 	VirtualFramebuffer *vfb = new VirtualFramebuffer{};
 	vfb->fbo = nullptr;
-	vfb->fb_address = fbAddress;  // NOTE - not necessarily in VRAM!
+	uint32_t mask = Memory::IsVRAMAddress(fbAddress) ? 0x041FFFFF : 0x3FFFFFFF;
+	vfb->fb_address = fbAddress & mask;  // NOTE - not necessarily in VRAM!
 	vfb->fb_stride = stride;
 	vfb->z_address = 0;  // marks that if anyone tries to render to this framebuffer, it should be dropped and recreated.
 	vfb->z_stride = 0;
@@ -1958,6 +2000,7 @@ VirtualFramebuffer *FramebufferManagerCommon::FindDownloadTempBuffer(VirtualFram
 		nvfb->fbo = draw_->CreateFramebuffer({ nvfb->bufferWidth, nvfb->bufferHeight, 1, 1, channel == RASTER_DEPTH ? true : false, name });
 		if (!nvfb->fbo) {
 			ERROR_LOG(FRAMEBUF, "Error creating FBO! %d x %d", nvfb->renderWidth, nvfb->renderHeight);
+			delete nvfb;
 			return nullptr;
 		}
 		bvfbs_.push_back(nvfb);
@@ -2527,7 +2570,7 @@ void FramebufferManagerCommon::PackFramebufferSync(VirtualFramebuffer *vfb, int 
 		return;
 	}
 
-	const u32 fb_address = vfb->fb_address & 0x3FFFFFFF;
+	const u32 fb_address = vfb->fb_address;
 
 	Draw::DataFormat destFormat = channel == RASTER_COLOR ? GEFormatToThin3D(vfb->fb_format) : GEFormatToThin3D(GE_FORMAT_DEPTH16);
 	const int dstBpp = (int)DataFormatSizeInBytes(destFormat);

@@ -52,6 +52,7 @@ static bool active = false;
 static bool nextFrame = false;
 static int flipLastAction = -1;
 static int flipFinishAt = -1;
+static uint32_t lastEdramTrans = 0x400;
 static std::function<void(const Path &)> writeCallback;
 
 static std::vector<u8> pushbuf;
@@ -321,6 +322,7 @@ static Command EmitCommandWithRAM(CommandType t, const void *p, u32 sz, u32 alig
 }
 
 static u32 GetTargetFlags(u32 addr, u32 sizeInRAM) {
+	addr &= 0x041FFFFF;
 	const bool isTarget = lastRenderTargets.find(addr) != lastRenderTargets.end();
 
 	bool isDirtyVRAM = false;
@@ -561,10 +563,27 @@ static void FinishRecording() {
 	active = false;
 	flipLastAction = gpuStats.numFlips;
 	flipFinishAt = -1;
+	lastEdramTrans = 0x400;
 
 	if (writeCallback)
 		writeCallback(filename);
 	writeCallback = nullptr;
+}
+
+static void CheckEdramTrans() {
+	if (!gpuDebug)
+		return;
+
+	uint32_t value = gpuDebug->GetAddrTranslation();
+	if (value == lastEdramTrans)
+		return;
+	lastEdramTrans = value;
+
+	FlushRegisters();
+	Command cmd{CommandType::EDRAMTRANS, sizeof(value), (u32)pushbuf.size()};
+	pushbuf.resize(pushbuf.size() + sizeof(value));
+	memcpy(pushbuf.data() + cmd.ptr, &value, sizeof(value));
+	commands.push_back(cmd);
 }
 
 void NotifyCommand(u32 pc) {
@@ -572,6 +591,7 @@ void NotifyCommand(u32 pc) {
 		return;
 	}
 
+	CheckEdramTrans();
 	const u32 op = Memory::Read_U32(pc);
 	const GECommand cmd = GECommand(op >> 24);
 
@@ -624,11 +644,14 @@ void NotifyMemcpy(u32 dest, u32 src, u32 sz) {
 	if (!active) {
 		return;
 	}
+
+	CheckEdramTrans();
 	if (Memory::IsVRAMAddress(dest)) {
 		FlushRegisters();
 		Command cmd{CommandType::MEMCPYDEST, sizeof(dest), (u32)pushbuf.size()};
 		pushbuf.resize(pushbuf.size() + sizeof(dest));
 		memcpy(pushbuf.data() + cmd.ptr, &dest, sizeof(dest));
+		commands.push_back(cmd);
 
 		sz = Memory::ValidSize(dest, sz);
 		if (sz != 0) {
@@ -642,6 +665,8 @@ void NotifyMemset(u32 dest, int v, u32 sz) {
 	if (!active) {
 		return;
 	}
+
+	CheckEdramTrans();
 	struct MemsetCommand {
 		u32 dest;
 		int value;
@@ -656,6 +681,7 @@ void NotifyMemset(u32 dest, int v, u32 sz) {
 		Command cmd{CommandType::MEMSET, sizeof(data), (u32)pushbuf.size()};
 		pushbuf.resize(pushbuf.size() + sizeof(data));
 		memcpy(pushbuf.data() + cmd.ptr, &data, sizeof(data));
+		commands.push_back(cmd);
 		DirtyVRAM(dest, sz, DirtyVRAMFlag::DIRTY);
 	}
 }
@@ -664,9 +690,12 @@ void NotifyUpload(u32 dest, u32 sz) {
 	if (!active) {
 		return;
 	}
-	NotifyMemcpy(dest, dest, sz);
-	if (Memory::IsVRAMAddress(dest))
+
+	if (Memory::IsVRAMAddress(dest)) {
+		// This also checks the edram translation value.
+		NotifyMemcpy(dest, dest, sz);
 		DirtyVRAM(dest, sz, DirtyVRAMFlag::DIRTY);
+	}
 }
 
 static bool HasDrawCommands() {
@@ -701,6 +730,7 @@ void NotifyDisplay(u32 framebuf, int stride, int fmt) {
 		return;
 	}
 
+	CheckEdramTrans();
 	struct DisplayBufData {
 		PSPPointer<u8> topaddr;
 		int linesize, pixelFormat;
@@ -728,6 +758,7 @@ void NotifyBeginFrame() {
 	if (active && HasDrawCommands() && (noDisplayAction || gpuStats.numFlips == flipFinishAt)) {
 		NOTICE_LOG(SYSTEM, "Recording complete on frame");
 
+		CheckEdramTrans();
 		struct DisplayBufData {
 			PSPPointer<u8> topaddr;
 			u32 linesize, pixelFormat;
@@ -755,6 +786,10 @@ void NotifyBeginFrame() {
 }
 
 void NotifyCPU() {
+	if (!active) {
+		return;
+	}
+
 	DirtyAllVRAM(DirtyVRAMFlag::DIRTY);
 }
 

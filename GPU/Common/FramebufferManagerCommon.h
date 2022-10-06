@@ -306,7 +306,7 @@ public:
 
 	void CopyDisplayToOutput(bool reallyDirty);
 
-	bool NotifyFramebufferCopy(u32 src, u32 dest, int size, bool isMemset, u32 skipDrawReason);
+	bool NotifyFramebufferCopy(u32 src, u32 dest, int size, GPUCopyFlag flags, u32 skipDrawReason);
 	void NotifyVideoUpload(u32 addr, int size, int width, GEBufferFormat fmt);
 	void UpdateFromMemory(u32 addr, int size);
 	void ApplyClearToMemory(int x1, int y1, int x2, int y2, u32 clearColor);
@@ -355,7 +355,9 @@ public:
 
 	bool MayIntersectFramebuffer(u32 start) const {
 		// Clear the cache/kernel bits.
-		start = start & 0x3FFFFFFF;
+		start &= 0x3FFFFFFF;
+		if (Memory::IsVRAMAddress(start))
+			start &= 0x041FFFFF;
 		// Most games only have two framebuffers at the start.
 		if (start >= framebufRangeEnd_ || start < PSP_GetVidMemBase()) {
 			return false;
