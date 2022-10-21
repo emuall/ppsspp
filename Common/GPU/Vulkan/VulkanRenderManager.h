@@ -12,6 +12,7 @@
 #include <thread>
 #include <queue>
 
+#include "Common/Math/Statistics.h"
 #include "Common/Thread/Promise.h"
 #include "Common/System/Display.h"
 #include "Common/GPU/Vulkan/VulkanContext.h"
@@ -229,7 +230,7 @@ public:
 
 	// Returns an ImageView corresponding to a framebuffer. Is called BindFramebufferAsTexture to maintain a similar interface
 	// as the other backends, even though there's no actual binding happening here.
-	VkImageView BindFramebufferAsTexture(VKRFramebuffer *fb, int binding, VkImageAspectFlags aspectBits, int attachment);
+	VkImageView BindFramebufferAsTexture(VKRFramebuffer *fb, int binding, VkImageAspectFlags aspectBits);
 
 	void BindCurrentFramebufferAsInputAttachment0(VkImageAspectFlags aspectBits);
 
@@ -425,6 +426,13 @@ public:
 		curRenderStep_->render.numDraws++;
 	}
 
+	// These can be useful both when inspecting in RenderDoc, and when manually inspecting recorded commands
+	// in the debugger.
+	void DebugAnnotate(const char *annotation) {
+		VkRenderData data{ VKRRenderCommand::DEBUG_ANNOTATION };
+		data.debugAnnotation.annotation = annotation;
+	}
+
 	VkCommandBuffer GetInitCmd();
 
 	// Gets a frame-unique ID of the current step being recorded. Can be used to figure out
@@ -461,6 +469,8 @@ public:
 		// Accepting a few of these makes shutdown simpler.
 		return outOfDateFrames_ > VulkanContext::MAX_INFLIGHT_FRAMES;
 	}
+
+	void ResetStats();
 
 private:
 	void EndCurRenderStep();
@@ -532,4 +542,9 @@ private:
 
 	// pipelines to check and possibly create at the end of the current render pass.
 	std::vector<VKRGraphicsPipeline *> pipelinesToCheck_;
+
+	// For nicer output in the little internal GPU profiler.
+	SimpleStat initTimeMs_;
+	SimpleStat totalGPUTimeMs_;
+	SimpleStat renderCPUTimeMs_;
 };

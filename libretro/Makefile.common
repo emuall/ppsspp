@@ -17,6 +17,7 @@ INCFLAGS += \
 	-I$(CORE_DIR) \
 	-I$(COMMONDIR) \
 	-I$(CORE_DIR)/libretro \
+	-I$(EXTDIR)/openxr \
 	-I$(EXTDIR)/glslang \
 	-I$(EXTDIR)/native \
 	-I$(EXTDIR)/zlib \
@@ -272,6 +273,7 @@ SOURCES_CXX += \
 	$(COMMONDIR)/Math/curves.cpp \
 	$(COMMONDIR)/Math/expression_parser.cpp \
 	$(COMMONDIR)/Math/math_util.cpp \
+	$(COMMONDIR)/Math/Statistics.cpp \
 	$(COMMONDIR)/Math/lin/vec3.cpp \
 	$(COMMONDIR)/Math/lin/matrix4x4.cpp \
 	$(COMMONDIR)/Net/HTTPClient.cpp \
@@ -313,6 +315,15 @@ SOURCES_CXX += \
 	$(COMMONDIR)/SysError.cpp \
 	$(COMMONDIR)/StringUtils.cpp \
 	$(COMMONDIR)/TimeUtil.cpp
+
+SOURCES_CXX += \
+	$(COMMONDIR)/VR/PPSSPPVR.cpp \
+	$(COMMONDIR)/VR/VRBase.cpp \
+	$(COMMONDIR)/VR/VRMath.cpp \
+	$(COMMONDIR)/VR/VRFramebuffer.cpp \
+	$(COMMONDIR)/VR/VRInput.cpp \
+	$(COMMONDIR)/VR/VRMath.cpp \
+	$(COMMONDIR)/VR/VRRenderer.cpp
 
 SOURCES_C +=\
 	$(COMMONDIR)/GPU/OpenGL/gl3stub.c \

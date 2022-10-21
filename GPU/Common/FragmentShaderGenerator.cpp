@@ -45,7 +45,7 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 
 	bool highpFog = false;
 	bool highpTexcoord = false;
-	bool enableFragmentTestCache = g_Config.bFragmentTestCache && ShaderLanguageIsOpenGL(compat.shaderLanguage);
+	bool enableFragmentTestCache = gstate_c.Use(GPU_USE_FRAGMENT_TEST_CACHE);
 
 	if (compat.gles) {
 		// PowerVR needs highp to do the fog in MHU correctly.
@@ -120,8 +120,9 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 	bool isModeClear = id.Bit(FS_BIT_CLEARMODE);
 
 	const char *shading = "";
-	if (compat.glslES30 || compat.shaderLanguage == ShaderLanguage::GLSL_VULKAN)
+	if (compat.glslES30 || compat.shaderLanguage == ShaderLanguage::GLSL_VULKAN) {
 		shading = doFlatShading ? "flat" : "";
+	}
 
 	bool useDiscardStencilBugWorkaround = id.Bit(FS_BIT_NO_DEPTH_CANNOT_DISCARD_STENCIL);
 
@@ -136,11 +137,11 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 
 	bool needFramebufferRead = replaceBlend == REPLACE_BLEND_READ_FRAMEBUFFER || colorWriteMask || replaceLogicOp;
 
-	bool fetchFramebuffer = needFramebufferRead && gstate_c.Supports(GPU_SUPPORTS_ANY_FRAMEBUFFER_FETCH);
-	bool readFramebufferTex = needFramebufferRead && !gstate_c.Supports(GPU_SUPPORTS_ANY_FRAMEBUFFER_FETCH);
+	bool fetchFramebuffer = needFramebufferRead && gstate_c.Use(GPU_USE_FRAMEBUFFER_FETCH);
+	bool readFramebufferTex = needFramebufferRead && !gstate_c.Use(GPU_USE_FRAMEBUFFER_FETCH);
 
-	bool needFragCoord = readFramebufferTex || gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT);
-	bool writeDepth = gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT);
+	bool needFragCoord = readFramebufferTex || gstate_c.Use(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT);
+	bool writeDepth = gstate_c.Use(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT);
 
 	if (shaderDepalMode != ShaderDepalMode::OFF && !doTexture) {
 		*errorString = "depal requires a texture";
@@ -148,7 +149,7 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 	}
 
 	if (compat.shaderLanguage == ShaderLanguage::GLSL_VULKAN) {
-		if (useDiscardStencilBugWorkaround && !gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT)) {
+		if (useDiscardStencilBugWorkaround && !gstate_c.Use(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT)) {
 			WRITE(p, "layout (depth_unchanged) out float gl_FragDepth;\n");
 		}
 
@@ -353,7 +354,11 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 				WRITE(p, "uniform sampler2D testtex;\n");
 			} else {
 				*uniformMask |= DIRTY_ALPHACOLORREF;
-				WRITE(p, "uniform vec4 u_alphacolorref;\n");
+				if (compat.bitwiseOps) {
+					WRITE(p, "uniform uint u_alphacolorref;\n");
+				} else {
+					WRITE(p, "uniform vec4 u_alphacolorref;\n");
+				}
 				if (compat.bitwiseOps && ((enableColorTest && !colorTestAgainstZero) || (enableAlphaTest && !alphaTestAgainstZero))) {
 					*uniformMask |= DIRTY_ALPHACOLORMASK;
 					WRITE(p, "uniform uint u_alphacolormask;\n");
@@ -882,7 +887,7 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 				const char *alphaTestFuncs[] = { "#", "#", " != ", " == ", " >= ", " > ", " <= ", " < " };
 				if (alphaTestFuncs[alphaTestFunc][0] != '#') {
 					if (compat.bitwiseOps) {
-						WRITE(p, "  if ((roundAndScaleTo255i(v.a) & int(u_alphacolormask >> 24)) %s int(u_alphacolorref.a)) %s\n", alphaTestFuncs[alphaTestFunc], discardStatement);
+						WRITE(p, "  if ((roundAndScaleTo255i(v.a) & int(u_alphacolormask >> 24)) %s int(u_alphacolorref >> 24)) %s\n", alphaTestFuncs[alphaTestFunc], discardStatement);
 					} else if (gl_extensions.gpuVendor == GPU_VENDOR_IMGTEC) {
 						// Work around bad PVR driver problem where equality check + discard just doesn't work.
 						if (alphaTestFunc != GE_COMP_NOTEQUAL) {
@@ -946,7 +951,7 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 					} else if (compat.bitwiseOps) {
 						WRITE(p, "  uint v_uint = roundAndScaleTo8x4(v.rgb);\n");
 						WRITE(p, "  uint v_masked = v_uint & u_alphacolormask;\n");
-						WRITE(p, "  uint colorTestRef = packFloatsTo8x4(u_alphacolorref.rgb) & u_alphacolormask;\n");
+						WRITE(p, "  uint colorTestRef = (u_alphacolorref & u_alphacolormask) & 0xFFFFFFu;\n");
 						WRITE(p, "  if (v_masked %s colorTestRef) %s\n", test, discardStatement);
 					} else if (gl_extensions.gpuVendor == GPU_VENDOR_IMGTEC) {
 						WRITE(p, "  if (roundTo255thv(v.rgb) %s u_alphacolorref.rgb) %s\n", test, discardStatement);
@@ -1156,7 +1161,10 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 
 		// Note that the mask has already been flipped to the PC way - 1 means write.
 		if (colorWriteMask) {
-			WRITE(p, "  v32 = (v32 & u_colorWriteMask) | (d32 & ~u_colorWriteMask);\n");
+			if (stencilToAlpha != REPLACE_ALPHA_NO)
+				WRITE(p, "  v32 = (v32 & u_colorWriteMask) | (d32 & ~u_colorWriteMask);\n");
+			else
+				WRITE(p, "  v32 = (v32 & u_colorWriteMask & 0x00FFFFFFu) | (d32 & (~u_colorWriteMask | 0xFF000000u));\n");
 		}
 		WRITE(p, "  %s = unpackUnorm4x8(v32);\n", compat.fragColor0);
 	}
@@ -1165,11 +1173,11 @@ bool GenerateFragmentShader(const FShaderID &id, char *buffer, const ShaderLangu
 		WRITE(p, "  %s = vec4(0.0, 0.0, 0.0, %s.z);  // blue to alpha\n", compat.fragColor0, compat.fragColor0);
 	}
 
-	if (gstate_c.Supports(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT)) {
+	if (gstate_c.Use(GPU_ROUND_FRAGMENT_DEPTH_TO_16BIT)) {
 		const double scale = DepthSliceFactor() * 65535.0;
 
 		WRITE(p, "  highp float z = gl_FragCoord.z;\n");
-		if (gstate_c.Supports(GPU_SUPPORTS_ACCURATE_DEPTH)) {
+		if (gstate_c.Use(GPU_USE_ACCURATE_DEPTH)) {
 			// We center the depth with an offset, but only its fraction matters.
 			// When (DepthSliceFactor() - 1) is odd, it will be 0.5, otherwise 0.
 			if (((int)(DepthSliceFactor() - 1.0f) & 1) == 1) {

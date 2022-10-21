@@ -38,6 +38,7 @@ enum class VKRRenderCommand : uint8_t {
 	DRAW_INDEXED,
 	PUSH_CONSTANTS,
 	SELF_DEPENDENCY_BARRIER,
+	DEBUG_ANNOTATION,
 	NUM_RENDER_COMMANDS,
 };
 
@@ -136,6 +137,9 @@ struct VkRenderData {
 			uint8_t size;
 			uint8_t data[40];  // Should be enough for now.
 		} push;
+		struct {
+			const char *annotation;
+		} debugAnnotation;
 	};
 };
 
@@ -278,7 +282,7 @@ public:
 	}
 
 	void PreprocessSteps(std::vector<VKRStep *> &steps);
-	void RunSteps(std::vector<VKRStep *> &steps, FrameData &frameData, FrameDataShared &frameDataShared);
+	void RunSteps(std::vector<VKRStep *> &steps, FrameData &frameData, FrameDataShared &frameDataShared, bool keepSteps = false);
 	void LogSteps(const std::vector<VKRStep *> &steps, bool verbose);
 
 	std::string StepToString(const VKRStep &step) const;

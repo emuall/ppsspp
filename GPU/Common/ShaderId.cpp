@@ -83,7 +83,7 @@ void ComputeVertexShaderID(VShaderID *id_out, u32 vertType, bool useHWTransform,
 	}
 
 	bool lmode = gstate.isUsingSecondaryColor() && gstate.isLightingEnabled() && !isModeThrough && !gstate.isModeClear();
-	bool vertexRangeCulling = gstate_c.Supports(GPU_SUPPORTS_VS_RANGE_CULLING) &&
+	bool vertexRangeCulling = gstate_c.Use(GPU_USE_VS_RANGE_CULLING) &&
 		!isModeThrough && gstate_c.submitType == SubmitType::DRAW;  // neither hw nor sw spline/bezier. See #11692
 
 	VShaderID id;
@@ -124,7 +124,7 @@ void ComputeVertexShaderID(VShaderID *id_out, u32 vertType, bool useHWTransform,
 		if (gstate.isLightingEnabled()) {
 			// doShadeMapping is stored as UVGenMode, and light type doesn't matter for shade mapping.
 			id.SetBit(VS_BIT_LIGHTING_ENABLE);
-			if (gstate_c.Supports(GPU_USE_LIGHT_UBERSHADER)) {
+			if (gstate_c.Use(GPU_USE_LIGHT_UBERSHADER)) {
 				id.SetBit(VS_BIT_LIGHT_UBERSHADER);
 			} else {
 				id.SetBits(VS_BIT_MATERIAL_UPDATE, 3, gstate.getMaterialUpdate());
@@ -255,6 +255,12 @@ std::string FragmentShaderDesc(const FShaderID &id) {
 	return desc.str();
 }
 
+bool FragmentIdNeedsFramebufferRead(const FShaderID &id) {
+	return id.Bit(FS_BIT_COLOR_WRITEMASK) ||
+		id.Bits(FS_BIT_REPLACE_LOGIC_OP, 4) != GE_LOGIC_COPY ||
+		(ReplaceBlendType)id.Bits(FS_BIT_REPLACE_BLEND, 3) == REPLACE_BLEND_READ_FRAMEBUFFER;
+}
+
 // Here we must take all the bits of the gstate that determine what the fragment shader will
 // look like, and concatenate them together into an ID.
 void ComputeFragmentShaderID(FShaderID *id_out, const ComputedPipelineState &pipelineState, const Draw::Bugs &bugs) {
@@ -276,11 +282,11 @@ void ComputeFragmentShaderID(FShaderID *id_out, const ComputedPipelineState &pip
 		ShaderDepalMode shaderDepalMode = gstate_c.shaderDepalMode;
 
 		bool colorWriteMask = pipelineState.maskState.applyFramebufferRead;
-
 		ReplaceBlendType replaceBlend = pipelineState.blendState.replaceBlend;
-		ReplaceAlphaType stencilToAlpha = pipelineState.blendState.replaceAlphaWithStencil;
-		SimulateLogicOpType simulateLogicOpType = pipelineState.blendState.simulateLogicOpType;
 		GELogicOp replaceLogicOpType = pipelineState.logicState.applyFramebufferRead ? pipelineState.logicState.logicOp : GE_LOGIC_COPY;
+
+		SimulateLogicOpType simulateLogicOpType = pipelineState.blendState.simulateLogicOpType;
+		ReplaceAlphaType stencilToAlpha = pipelineState.blendState.replaceAlphaWithStencil;
 
 		// All texfuncs except replace are the same for RGB as for RGBA with full alpha.
 		// Note that checking this means that we must dirty the fragment shader ID whenever textureFullAlpha changes.
@@ -384,11 +390,11 @@ void ComputeGeometryShaderID(GShaderID *id_out, const Draw::Bugs &bugs, int prim
 	bool isTriangle = prim == GE_PRIM_TRIANGLES || prim == GE_PRIM_TRIANGLE_FAN || prim == GE_PRIM_TRIANGLE_STRIP;
 
 	bool vertexRangeCulling = !isCurve;
-	bool clipClampedDepth = gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP) && !gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE);
+	bool clipClampedDepth = gstate_c.Use(GPU_USE_DEPTH_CLAMP) && !gstate_c.Use(GPU_USE_CLIP_DISTANCE);
 
 	// If we're not using GS culling, return a zero ID.
 	// Also, only use this for triangle primitives.
-	if ((!vertexRangeCulling && !clipClampedDepth) || isModeThrough || !isTriangle || !gstate_c.Supports(GPU_SUPPORTS_GS_CULLING)) {
+	if ((!vertexRangeCulling && !clipClampedDepth) || isModeThrough || !isTriangle || !gstate_c.Use(GPU_USE_GS_CULLING)) {
 		*id_out = id;
 		return;
 	}

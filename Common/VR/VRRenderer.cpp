@@ -2,23 +2,23 @@
 #include "VRInput.h"
 #include "VRRenderer.h"
 
-#include <assert.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include <GLES3/gl3.h>
-#include <GLES3/gl3ext.h>
+#include <cassert>
+#include <cstdlib>
+#include <cstring>
 
 XrFovf fov;
 XrView* projections;
 XrPosef invViewTransform[2];
 XrFrameState frameState = {};
-GLboolean initialized = GL_FALSE;
-GLboolean stageSupported = GL_FALSE;
+bool initialized = false;
+bool stageSupported = false;
 int vrConfig[VR_CONFIG_MAX] = {};
+ovrMatrix4f vrMatrix[VR_MATRIX_COUNT];
 
 XrVector3f hmdorientation;
 XrVector3f hmdposition;
+
+#ifdef OPENXR
 
 void VR_UpdateStageBounds(ovrApp* pappState) {
 	XrExtent2Df stageBounds = {};
@@ -195,7 +195,7 @@ void VR_InitRenderer( engine_t* engine, bool multiview ) {
 
 	for (uint32_t i = 0; i < numOutputSpaces; i++) {
 		if (referenceSpaces[i] == XR_REFERENCE_SPACE_TYPE_STAGE) {
-			stageSupported = GL_TRUE;
+			stageSupported = true;
 			break;
 		}
 	}
@@ -208,46 +208,35 @@ void VR_InitRenderer( engine_t* engine, bool multiview ) {
 
 	projections = (XrView*)(malloc(ovrMaxNumEyes * sizeof(XrView)));
 
-	ovrRenderer_Create(
-			engine->appState.Session,
-			&engine->appState.Renderer,
+	void* vulkanContext = nullptr;
+	if (engine->useVulkan) {
+		vulkanContext = &engine->graphicsBindingVulkan;
+	}
+	ovrRenderer_Create(engine->appState.Session, &engine->appState.Renderer,
 			engine->appState.ViewConfigurationView[0].recommendedImageRectWidth,
 			engine->appState.ViewConfigurationView[0].recommendedImageRectHeight,
-			multiview);
-	initialized = GL_TRUE;
+			multiview, vulkanContext);
+	initialized = true;
 }
 
 void VR_DestroyRenderer( engine_t* engine ) {
 	ovrRenderer_Destroy(&engine->appState.Renderer);
 	free(projections);
-	initialized = GL_FALSE;
-}
-
-void VR_ClearFrameBuffer( int width, int height) {
-	glEnable( GL_SCISSOR_TEST );
-	glViewport( 0, 0, width, height );
-
-	glClearColor( 0.0f, 0.0f, 0.0f, 1.0f );
-
-	glScissor( 0, 0, width, height );
-	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
-
-	glScissor( 0, 0, 0, 0 );
-	glDisable( GL_SCISSOR_TEST );
+	initialized = false;
 }
 
 bool VR_InitFrame( engine_t* engine ) {
-	GLboolean stageBoundsDirty = GL_TRUE;
+	bool stageBoundsDirty = true;
 	if (ovrApp_HandleXrEvents(&engine->appState)) {
 		VR_Recenter(engine);
 	}
-	if (engine->appState.SessionActive == GL_FALSE) {
+	if (engine->appState.SessionActive == false) {
 		return false;
 	}
 
 	if (stageBoundsDirty) {
 		VR_UpdateStageBounds(&engine->appState);
-		stageBoundsDirty = GL_FALSE;
+		stageBoundsDirty = false;
 	}
 
 	// NOTE: OpenXR does not use the concept of frame indices. Instead,
@@ -310,43 +299,92 @@ bool VR_InitFrame( engine_t* engine ) {
 
 	engine->appState.LayerCount = 0;
 	memset(engine->appState.Layers, 0, sizeof(ovrCompositorLayer_Union) * ovrMaxLayerCount);
+
+	// Update matrices
+	for (int matrix = 0; matrix < VR_MATRIX_COUNT; matrix++) {
+		if ((matrix == VR_PROJECTION_MATRIX_LEFT_EYE) || (matrix == VR_PROJECTION_MATRIX_RIGHT_EYE)) {
+			float nearPlane = (float)vrConfig[VR_CONFIG_FOV_SCALE] / 200.0f;
+			vrMatrix[matrix] = ovrMatrix4f_CreateProjectionFov(fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown, nearPlane, 0.0f );
+		} else if ((matrix == VR_VIEW_MATRIX_LEFT_EYE) || (matrix == VR_VIEW_MATRIX_RIGHT_EYE)) {
+			XrPosef invView = invViewTransform[0];
+
+			// get axis mirroring configuration
+			float mx = vrConfig[VR_CONFIG_MIRROR_PITCH] ? -1 : 1;
+			float my = vrConfig[VR_CONFIG_MIRROR_YAW] ? -1 : 1;
+			float mz = vrConfig[VR_CONFIG_MIRROR_ROLL] ? -1 : 1;
+
+			// ensure there is maximally one axis to mirror rotation
+			if (mx + my + mz < 0) {
+				mx *= -1.0f;
+				my *= -1.0f;
+				mz *= -1.0f;
+			} else {
+				invView = XrPosef_Inverse(invView);
+			}
+
+			// create updated quaternion
+			if (mx + my + mz < 3 - EPSILON) {
+				XrVector3f rotation = XrQuaternionf_ToEulerAngles(invView.orientation);
+				XrQuaternionf pitch = XrQuaternionf_CreateFromVectorAngle({1, 0, 0}, mx * ToRadians(rotation.x));
+				XrQuaternionf yaw = XrQuaternionf_CreateFromVectorAngle({0, 1, 0}, my * ToRadians(rotation.y));
+				XrQuaternionf roll = XrQuaternionf_CreateFromVectorAngle({0, 0, 1}, mz * ToRadians(rotation.z));
+				invView.orientation = XrQuaternionf_Multiply(roll, XrQuaternionf_Multiply(pitch, yaw));
+			}
+
+			vrMatrix[matrix] = ovrMatrix4f_CreateFromQuaternion(&invView.orientation);
+			float scale = (float)VR_GetConfig(VR_CONFIG_6DOF_SCALE) * 0.000001f;
+			if (vrConfig[VR_CONFIG_6DOF_ENABLED]) {
+				vrMatrix[matrix].M[0][3] -= hmdposition.x * (vrConfig[VR_CONFIG_MIRROR_AXIS_X] ? -1.0f : 1.0f) * scale;
+				vrMatrix[matrix].M[1][3] -= hmdposition.y * (vrConfig[VR_CONFIG_MIRROR_AXIS_Y] ? -1.0f : 1.0f) * scale;
+				vrMatrix[matrix].M[2][3] -= hmdposition.z * (vrConfig[VR_CONFIG_MIRROR_AXIS_Z] ? -1.0f : 1.0f) * scale;
+			}
+			if (abs(vrConfig[VR_CONFIG_CAMERA_DISTANCE]) > 0) {
+				XrVector3f forward = {0.0f, 0.0f, (float)vrConfig[VR_CONFIG_CAMERA_DISTANCE] * scale};
+				forward = XrQuaternionf_Rotate(invView.orientation, forward);
+				forward = XrVector3f_ScalarMultiply(forward, vrConfig[VR_CONFIG_MIRROR_AXIS_Z] ? -1.0f : 1.0f);
+				vrMatrix[matrix].M[0][3] += forward.x;
+				vrMatrix[matrix].M[1][3] += forward.y;
+				vrMatrix[matrix].M[2][3] += forward.z;
+			}
+			if (vrConfig[VR_CONFIG_6DOF_PRECISE] && (matrix == VR_VIEW_MATRIX_RIGHT_EYE)) {
+				float dx = fabs(invViewTransform[1].position.x - invViewTransform[0].position.x);
+				float dy = fabs(invViewTransform[1].position.y - invViewTransform[0].position.y);
+				float dz = fabs(invViewTransform[1].position.z - invViewTransform[0].position.z);
+				float ipd = sqrt(dx * dx + dy * dy + dz * dz);
+				XrVector3f separation = {ipd * scale, 0.0f, 0.0f};
+				separation = XrQuaternionf_Rotate(invView.orientation, separation);
+				separation = XrVector3f_ScalarMultiply(separation, vrConfig[VR_CONFIG_MIRROR_AXIS_Z] ? -1.0f : 1.0f);
+				vrMatrix[matrix].M[0][3] -= separation.x;
+				vrMatrix[matrix].M[1][3] -= separation.y;
+				vrMatrix[matrix].M[2][3] -= separation.z;
+			}
+		} else {
+			assert(false);
+		}
+	}
 	return true;
 }
 
 void VR_BeginFrame( engine_t* engine, int fboIndex ) {
 	vrConfig[VR_CONFIG_CURRENT_FBO] = fboIndex;
-	ovrFramebuffer* frameBuffer = &engine->appState.Renderer.FrameBuffer[fboIndex];
-	ovrFramebuffer_Acquire(frameBuffer);
-	ovrFramebuffer_SetCurrent(frameBuffer);
-	VR_ClearFrameBuffer(frameBuffer->ColorSwapChain.Width, frameBuffer->ColorSwapChain.Height);
+	ovrFramebuffer_Acquire(&engine->appState.Renderer.FrameBuffer[fboIndex]);
 }
 
 void VR_EndFrame( engine_t* engine ) {
-
 	int fboIndex = vrConfig[VR_CONFIG_CURRENT_FBO];
-
-	// Clear the alpha channel, other way OpenXR would not transfer the framebuffer fully
 	VR_BindFramebuffer(engine);
-	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
-	glClearColor(0.0, 0.0, 0.0, 1.0);
-	glClear(GL_COLOR_BUFFER_BIT);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
 	// Show mouse cursor
 	int size = vrConfig[VR_CONFIG_MOUSE_SIZE];
-	if ((vrConfig[VR_CONFIG_MODE] == VR_MODE_FLAT_SCREEN) && (size > 0)) {
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(vrConfig[VR_CONFIG_MOUSE_X], vrConfig[VR_CONFIG_MOUSE_Y], size, size);
-		glViewport(vrConfig[VR_CONFIG_MOUSE_X], vrConfig[VR_CONFIG_MOUSE_Y], size, size);
-		glClearColor(1, 1, 1, 1);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glDisable(GL_SCISSOR_TEST);
+	int vrMode = vrConfig[VR_CONFIG_MODE];
+	bool screenMode = (vrMode == VR_MODE_MONO_SCREEN) || (vrMode == VR_MODE_STEREO_SCREEN);
+	if (screenMode && (size > 0)) {
+		int x = vrConfig[VR_CONFIG_MOUSE_X];
+		int y = vrConfig[VR_CONFIG_MOUSE_Y];
+		ovrRenderer_MouseCursor(&engine->appState.Renderer, x, y, size);
 	}
 
-	ovrFramebuffer* frameBuffer = &engine->appState.Renderer.FrameBuffer[fboIndex];
-	//ovrFramebuffer_Resolve(frameBuffer);
-	ovrFramebuffer_Release(frameBuffer);
-	ovrFramebuffer_SetNone();
+	ovrFramebuffer_Release(&engine->appState.Renderer.FrameBuffer[fboIndex]);
 }
 
 void VR_FinishFrame( engine_t* engine ) {
@@ -390,23 +428,9 @@ void VR_FinishFrame( engine_t* engine ) {
 		projection_layer.views = projection_layer_elements;
 
 		engine->appState.Layers[engine->appState.LayerCount++].Projection = projection_layer;
-	} else if (vrMode == VR_MODE_FLAT_SCREEN) {
+	} else if ((vrMode == VR_MODE_MONO_SCREEN) || (vrMode == VR_MODE_STEREO_SCREEN)) {
 
-		// Build the cylinder layer
-		int width = engine->appState.Renderer.FrameBuffer[0].ColorSwapChain.Width;
-		int height = engine->appState.Renderer.FrameBuffer[0].ColorSwapChain.Height;
-		XrCompositionLayerCylinderKHR cylinder_layer = {};
-		cylinder_layer.type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
-		cylinder_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-		cylinder_layer.space = engine->appState.CurrentSpace;
-		cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		memset(&cylinder_layer.subImage, 0, sizeof(XrSwapchainSubImage));
-		cylinder_layer.subImage.swapchain = engine->appState.Renderer.FrameBuffer[0].ColorSwapChain.Handle;
-		cylinder_layer.subImage.imageRect.offset.x = 0;
-		cylinder_layer.subImage.imageRect.offset.y = 0;
-		cylinder_layer.subImage.imageRect.extent.width = width;
-		cylinder_layer.subImage.imageRect.extent.height = height;
-		cylinder_layer.subImage.imageArrayIndex = 0;
+		// Flat screen pose
 		float distance = (float)vrConfig[VR_CONFIG_CANVAS_DISTANCE];
 		float menuPitch = ToRadians((float)vrConfig[VR_CONFIG_MENU_PITCH]);
 		float menuYaw = ToRadians((float)vrConfig[VR_CONFIG_MENU_YAW]);
@@ -417,13 +441,42 @@ void VR_FinishFrame( engine_t* engine ) {
 		};
 		XrQuaternionf pitch = XrQuaternionf_CreateFromVectorAngle({1, 0, 0}, -menuPitch);
 		XrQuaternionf yaw = XrQuaternionf_CreateFromVectorAngle({0, 1, 0}, menuYaw);
+
+		// Setup the cylinder layer
+		XrCompositionLayerCylinderKHR cylinder_layer = {};
+		cylinder_layer.type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
+		cylinder_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		cylinder_layer.space = engine->appState.CurrentSpace;
+		memset(&cylinder_layer.subImage, 0, sizeof(XrSwapchainSubImage));
+		cylinder_layer.subImage.imageRect.offset.x = 0;
+		cylinder_layer.subImage.imageRect.offset.y = 0;
+		cylinder_layer.subImage.imageRect.extent.width = engine->appState.Renderer.FrameBuffer[0].ColorSwapChain.Width;
+		cylinder_layer.subImage.imageRect.extent.height = engine->appState.Renderer.FrameBuffer[0].ColorSwapChain.Height;
+		cylinder_layer.subImage.swapchain = engine->appState.Renderer.FrameBuffer[0].ColorSwapChain.Handle;
+		cylinder_layer.subImage.imageArrayIndex = 0;
 		cylinder_layer.pose.orientation = XrQuaternionf_Multiply(pitch, yaw);
 		cylinder_layer.pose.position = pos;
 		cylinder_layer.radius = 12.0f;
 		cylinder_layer.centralAngle = M_PI * 0.5f;
 		cylinder_layer.aspectRatio = 1;
 
-		engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
+		// Build the cylinder layer
+		if (vrMode == VR_MODE_MONO_SCREEN) {
+			cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+			engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
+		} else if (engine->appState.Renderer.Multiview) {
+			cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_LEFT;
+			engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
+			cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
+			cylinder_layer.subImage.imageArrayIndex = 1;
+			engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
+		} else {
+			cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_LEFT;
+			engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
+			cylinder_layer.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
+			cylinder_layer.subImage.swapchain = engine->appState.Renderer.FrameBuffer[1].ColorSwapChain.Handle;
+			engine->appState.Layers[engine->appState.LayerCount++].Cylinder = cylinder_layer;
+		}
 	} else {
 		assert(false);
 	}
@@ -458,67 +511,14 @@ void VR_SetConfig( VRConfig config, int value) {
 	vrConfig[config] = value;
 }
 
-void VR_BindFramebuffer(engine_t *engine) {
-	if (!initialized) return;
+void* VR_BindFramebuffer(engine_t *engine) {
+	if (!initialized) return nullptr;
 	int fboIndex = vrConfig[VR_CONFIG_CURRENT_FBO];
-	ovrFramebuffer* frameBuffer = &engine->appState.Renderer.FrameBuffer[fboIndex];
-	unsigned int swapchainIndex = frameBuffer->TextureSwapChainIndex;
-	unsigned int glFramebuffer = frameBuffer->FrameBuffers[swapchainIndex];
-	GL(glBindFramebuffer(GL_DRAW_FRAMEBUFFER, glFramebuffer));
+	return ovrFramebuffer_SetCurrent(&engine->appState.Renderer.FrameBuffer[fboIndex]);
 }
 
 ovrMatrix4f VR_GetMatrix( VRMatrix matrix ) {
-	ovrMatrix4f output;
-	if ((matrix == VR_PROJECTION_MATRIX_LEFT_EYE) || (matrix == VR_PROJECTION_MATRIX_RIGHT_EYE)) {
-		float near = (float)vrConfig[VR_CONFIG_FOV_SCALE] / 200.0f;
-		output = ovrMatrix4f_CreateProjectionFov(fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown, near, 0.0f );
-	} else if ((matrix == VR_VIEW_MATRIX_LEFT_EYE) || (matrix == VR_VIEW_MATRIX_RIGHT_EYE)) {
-		XrPosef invView = invViewTransform[0];
-
-		// get axis mirroring configuration
-		float mx = vrConfig[VR_CONFIG_MIRROR_PITCH] ? -1 : 1;
-		float my = vrConfig[VR_CONFIG_MIRROR_YAW] ? -1 : 1;
-		float mz = vrConfig[VR_CONFIG_MIRROR_ROLL] ? -1 : 1;
-
-		// ensure there is maximally one axis to mirror rotation
-		if (mx + my + mz < 0) {
-			mx *= -1.0f;
-			my *= -1.0f;
-			mz *= -1.0f;
-		} else {
-			invView = XrPosef_Inverse(invView);
-		}
-
-		// create updated quaternion
-		if (mx + my + mz < 3 - EPSILON) {
-			XrVector3f rotation = XrQuaternionf_ToEulerAngles(invView.orientation);
-			XrQuaternionf pitch = XrQuaternionf_CreateFromVectorAngle({1, 0, 0}, mx * ToRadians(rotation.x));
-			XrQuaternionf yaw = XrQuaternionf_CreateFromVectorAngle({0, 1, 0}, my * ToRadians(rotation.y));
-			XrQuaternionf roll = XrQuaternionf_CreateFromVectorAngle({0, 0, 1}, mz * ToRadians(rotation.z));
-			invView.orientation = XrQuaternionf_Multiply(roll, XrQuaternionf_Multiply(pitch, yaw));
-		}
-
-		output = ovrMatrix4f_CreateFromQuaternion(&invView.orientation);
-		float scale = (float)VR_GetConfig(VR_CONFIG_6DOF_SCALE) * 0.000001f;
-		if (vrConfig[VR_CONFIG_6DOF_ENABLED]) {
-			output.M[0][3] -= hmdposition.x * (vrConfig[VR_CONFIG_MIRROR_AXIS_X] ? -1.0f : 1.0f) * scale;
-			output.M[1][3] -= hmdposition.y * (vrConfig[VR_CONFIG_MIRROR_AXIS_Y] ? -1.0f : 1.0f) * scale;
-			output.M[2][3] -= hmdposition.z * (vrConfig[VR_CONFIG_MIRROR_AXIS_Z] ? -1.0f : 1.0f) * scale;
-		}
-		if (vrConfig[VR_CONFIG_6DOF_PRECISE] && (matrix == VR_VIEW_MATRIX_RIGHT_EYE)) {
-			float dx = fabs(invViewTransform[1].position.x - invViewTransform[0].position.x);
-			float dy = fabs(invViewTransform[1].position.y - invViewTransform[0].position.y);
-			float dz = fabs(invViewTransform[1].position.z - invViewTransform[0].position.z);
-			float ipd = sqrt(dx * dx + dy * dy + dz * dz);
-			XrVector3f separation = {ipd * scale, 0.0f, 0.0f};
-			separation = XrQuaternionf_Rotate(invView.orientation, separation);
-			separation = XrVector3f_ScalarMultiply(separation, vrConfig[VR_CONFIG_MIRROR_AXIS_Z] ? -1.0f : 1.0f);
-			output.M[0][3] -= separation.x;
-			output.M[1][3] -= separation.y;
-			output.M[2][3] -= separation.z;
-		}
-	} else {
-		assert(false);
-	}
-	return output;
+	return vrMatrix[matrix];
 }
+
+#endif

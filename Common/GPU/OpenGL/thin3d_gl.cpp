@@ -358,7 +358,7 @@ public:
 	Framebuffer *GetCurrentRenderTarget() override {
 		return curRenderTarget_;
 	}
-	void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int attachment) override;
+	void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit) override;
 
 	void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) override;
 
@@ -551,7 +551,7 @@ OpenGLContext::OpenGLContext() {
 	caps_.framebufferBlitSupported = gl_extensions.NV_framebuffer_blit || gl_extensions.ARB_framebuffer_object || gl_extensions.GLES3;
 	caps_.framebufferDepthBlitSupported = caps_.framebufferBlitSupported;
 	caps_.framebufferStencilBlitSupported = caps_.framebufferBlitSupported;
-	caps_.depthClampSupported = gl_extensions.ARB_depth_clamp;
+	caps_.depthClampSupported = gl_extensions.ARB_depth_clamp || gl_extensions.EXT_depth_clamp;
 	caps_.blendMinMaxSupported = gl_extensions.EXT_blend_minmax;
 
 	if (gl_extensions.IsGLES) {
@@ -1436,7 +1436,7 @@ bool OpenGLContext::BlitFramebuffer(Framebuffer *fbsrc, int srcX1, int srcY1, in
 	return true;
 }
 
-void OpenGLContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int color) {
+void OpenGLContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit) {
 	OpenGLFramebuffer *fb = (OpenGLFramebuffer *)fbo;
 	_assert_(binding < MAX_TEXTURE_SLOTS);
 
@@ -1453,7 +1453,7 @@ void OpenGLContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBCh
 		aspect |= GL_STENCIL_BUFFER_BIT;
 		boundTextures_[binding] = &fb->framebuffer_->z_stencil_texture;
 	}
-	renderManager_.BindFramebufferAsTexture(fb->framebuffer_, binding, aspect, color);
+	renderManager_.BindFramebufferAsTexture(fb->framebuffer_, binding, aspect);
 }
 
 void OpenGLContext::GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) {

@@ -367,6 +367,8 @@ public:
 	VKContext(VulkanContext *vulkan);
 	virtual ~VKContext();
 
+	void DebugAnnotate(const char *annotation) override;
+
 	const DeviceCaps &GetDeviceCaps() const override {
 		return caps_;
 	}
@@ -406,7 +408,7 @@ public:
 	Framebuffer *GetCurrentRenderTarget() override {
 		return (Framebuffer *)curFramebuffer_.ptr;
 	}
-	void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int attachment) override;
+	void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit) override;
 	void BindCurrentFramebufferForColorInput() override;
 
 	void GetFramebufferDimensions(Framebuffer *fbo, int *w, int *h) override;
@@ -454,6 +456,10 @@ public:
 	void WipeQueue() override;
 
 	void FlushState() override {}
+
+	void ResetStats() override {
+		renderManager_.ResetStats();
+	}
 
 	std::string GetInfoString(InfoField info) const override {
 		// TODO: Make these actually query the right information
@@ -848,8 +854,9 @@ VKContext::VKContext(VulkanContext *vulkan)
 		}
 
 		// Older ARM devices have very slow geometry shaders, not worth using.  At least before 15.
-		if (majorVersion <= 15) {
-			bugs_.Infest(Bugs::GEOMETRY_SHADERS_SLOW);
+		// Also seen to cause weird issues on 18, so let's lump it in.
+		if (majorVersion <= 18) {
+			bugs_.Infest(Bugs::GEOMETRY_SHADERS_SLOW_OR_BROKEN);
 		}
 	}
 
@@ -1004,6 +1011,8 @@ VkDescriptorSet VKContext::GetOrCreateDescriptorSet(VkBuffer buf) {
 		ERROR_LOG(G3D, "GetOrCreateDescriptorSet failed");
 		return VK_NULL_HANDLE;
 	}
+
+	vulkan_->SetDebugName(descSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "(thin3d desc set)");
 
 	VkDescriptorBufferInfo bufferDesc;
 	bufferDesc.buffer = buf;
@@ -1554,7 +1563,7 @@ void VKContext::BindFramebufferAsRenderTarget(Framebuffer *fbo, const RenderPass
 	curFramebuffer_ = fb;
 }
 
-void VKContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int attachment) {
+void VKContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit) {
 	VKFramebuffer *fb = (VKFramebuffer *)fbo;
 	_assert_(binding < MAX_BOUND_TEXTURES);
 
@@ -1574,8 +1583,9 @@ void VKContext::BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChanne
 		_assert_(false);
 		break;
 	}
+
 	boundTextures_[binding] = nullptr;
-	boundImageView_[binding] = renderManager_.BindFramebufferAsTexture(fb->GetFB(), binding, aspect, attachment);
+	boundImageView_[binding] = renderManager_.BindFramebufferAsTexture(fb->GetFB(), binding, aspect);
 }
 
 void VKContext::BindCurrentFramebufferForColorInput() {
@@ -1644,6 +1654,10 @@ uint64_t VKContext::GetNativeObject(NativeObject obj, void *srcObject) {
 		Crash();
 		return 0;
 	}
+}
+
+void VKContext::DebugAnnotate(const char *annotation) {
+	renderManager_.DebugAnnotate(annotation);
 }
 
 }  // namespace Draw

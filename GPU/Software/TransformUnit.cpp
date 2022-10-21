@@ -337,17 +337,12 @@ ClipVertexData TransformUnit::ReadVertex(VertexReader &vreader, const TransformS
 		vertex.v.texturecoords = lastTC;
 	}
 
-	Vec3f normal;
 	static Vec3f lastnormal;
-	if (vreader.hasNormal()) {
-		vreader.ReadNrm(normal.AsArray());
-		lastnormal = normal;
-
-		if (state.negateNormals)
-			normal = -normal;
-	} else {
-		normal = lastnormal;
-	}
+	if (vreader.hasNormal())
+		vreader.ReadNrm(lastnormal.AsArray());
+	Vec3f normal = lastnormal;
+	if (state.negateNormals)
+		normal = -normal;
 
 	if (state.readWeights) {
 		float W[8] = { 1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f };
@@ -416,11 +411,9 @@ ClipVertexData TransformUnit::ReadVertex(VertexReader &vreader, const TransformS
 		vertex.v.clipw = vertex.clippos.w;
 
 		Vec3<float> worldnormal;
-		if (vreader.hasNormal()) {
+		if (state.enableLighting || state.uvGenMode == GE_TEXMAP_ENVIRONMENT_MAP) {
 			worldnormal = TransformUnit::ModelToWorldNormal(normal);
 			worldnormal.NormalizeOr001();
-		} else {
-			worldnormal = Vec3<float>(0.0f, 0.0f, 1.0f);
 		}
 
 		// Time to generate some texture coords.  Lighting will handle shade mapping.
@@ -793,7 +786,7 @@ void TransformUnit::SubmitPrimitive(const void* vertices, const void* indices, G
 				}
 
 				int tl = -1, br = -1;
-				if (Rasterizer::DetectRectangleFromFan(binner_->State(), data_, vertex_count, &tl, &br)) {
+				if (Rasterizer::DetectRectangleFromFan(binner_->State(), data_, &tl, &br)) {
 					Clipper::ProcessRect(data_[tl], data_[br], *binner_);
 					break;
 				}

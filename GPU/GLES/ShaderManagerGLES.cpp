@@ -130,10 +130,9 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 	queries.push_back({ &u_cullRangeMax, "u_cullRangeMax" });
 	queries.push_back({ &u_rotation, "u_rotation" });
 
-	if (IsVRBuild()) {
-		queries.push_back({ &u_scaleX, "u_scaleX" });
-		queries.push_back({ &u_scaleY, "u_scaleY" });
-	}
+	// These two are only used for VR, but let's always query them for simplicity.
+	queries.push_back({ &u_scaleX, "u_scaleX" });
+	queries.push_back({ &u_scaleY, "u_scaleY" });
 
 #ifdef USE_BONE_ARRAY
 	queries.push_back({ &u_bone, "u_bone" });
@@ -196,12 +195,12 @@ LinkedShader::LinkedShader(GLRenderManager *render, VShaderID VSID, Shader *vs, 
 	initialize.push_back({ &u_tess_weights_v, 0, TEX_SLOT_SPLINE_WEIGHTS_V });
 
 	GLRProgramFlags flags{};
-	flags.supportDualSource = (gstate_c.featureFlags & GPU_SUPPORTS_DUALSOURCE_BLEND) != 0;
-	if (!VSID.Bit(VS_BIT_IS_THROUGH) && gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP)) {
+	flags.supportDualSource = (gstate_c.useFlags & GPU_USE_DUALSOURCE_BLEND) != 0;
+	if (!VSID.Bit(VS_BIT_IS_THROUGH) && gstate_c.Use(GPU_USE_DEPTH_CLAMP)) {
 		flags.useClipDistance0 = true;
-		if (VSID.Bit(VS_BIT_VERTEX_RANGE_CULLING) && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE))
+		if (VSID.Bit(VS_BIT_VERTEX_RANGE_CULLING) && gstate_c.Use(GPU_USE_CLIP_DISTANCE))
 			flags.useClipDistance1 = true;
-	} else if (VSID.Bit(VS_BIT_VERTEX_RANGE_CULLING) && gstate_c.Supports(GPU_SUPPORTS_CLIP_DISTANCE)) {
+	} else if (VSID.Bit(VS_BIT_VERTEX_RANGE_CULLING) && gstate_c.Use(GPU_USE_CLIP_DISTANCE)) {
 		flags.useClipDistance0 = true;
 	}
 
@@ -323,7 +322,7 @@ static inline void FlipProjMatrix(Matrix4x4 &in, bool useBufferedRendering) {
 
 	// In Phantasy Star Portable 2, depth range sometimes goes negative and is clamped by glDepthRange to 0,
 	// causing graphics clipping glitch (issue #1788). This hack modifies the projection matrix to work around it.
-	if (gstate_c.Supports(GPU_USE_DEPTH_RANGE_HACK)) {
+	if (gstate_c.Use(GPU_USE_DEPTH_RANGE_HACK)) {
 		float zScale = gstate.getViewportZScale() / 65535.0f;
 		float zCenter = gstate.getViewportZCenter() / 65535.0f;
 
@@ -359,14 +358,17 @@ void LinkedShader::use(const ShaderID &VSID) {
 	// Note that we no longer track attr masks here - we do it for the input layouts instead.
 }
 
-void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBufferedRendering) {
+void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBufferedRendering, const ShaderLanguageDesc &shaderLanguage) {
 	u64 dirty = dirtyUniforms & availableUniforms;
 	dirtyUniforms = 0;
 
-	if (IsVRBuild()) {
-		dirty |= DIRTY_VIEWMATRIX;
-		SetVRCompat(VR_COMPAT_FOG_COLOR, gstate.fogcolor);
+	// Analyze scene
+	bool is2D, flatScreen;
+	if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
+		is2D = Is2DVRObject(gstate.projMatrix, gstate.isModeThrough());
+		flatScreen = IsFlatVRScene();
 	}
+
 	if (!dirty)
 		return;
 
@@ -381,13 +383,8 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 		render_->SetUniformUI1(&u_depal_mask_shift_off_fmt, val);
 	}
 
-	bool is2D, flatScreen;
-	if (IsVRBuild()) {
-		// Analyze scene
-		is2D = Is2DVRObject(gstate.projMatrix, gstate.isModeThrough());
-		flatScreen = IsFlatVRScene();
-
-		// Set HUD mode
+	// Set HUD mode
+	if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
 		bool is3D = gstate.isDepthWriteEnabled();
 		bool hud = is2D && !is3D && !flatScreen &&
 		           gstate.isModeThrough() &&       //2D content requires orthographic projection
@@ -406,7 +403,7 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 
 	// Update any dirty uniforms before we draw
 	if (dirty & DIRTY_PROJMATRIX) {
-		if (IsVRBuild()) {
+		if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
 			Matrix4x4 leftEyeMatrix, rightEyeMatrix;
 			if (flatScreen || is2D) {
 				memcpy(&leftEyeMatrix, gstate.projMatrix, 16 * sizeof(float));
@@ -432,8 +429,7 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 		render_->SetUniformM4x4(&u_proj, flippedMatrix.m);
 		render_->SetUniformF1(&u_rotation, useBufferedRendering ? 0 : (float)g_display_rotation);
 	}
-	if (dirty & DIRTY_PROJTHROUGHMATRIX)
-	{
+	if (dirty & DIRTY_PROJTHROUGHMATRIX) {
 		Matrix4x4 proj_through;
 		if (useBufferedRendering) {
 			proj_through.setOrtho(0.0f, gstate_c.curRTWidth, 0.0f, gstate_c.curRTHeight, 0.0f, 1.0f);
@@ -446,7 +442,11 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 		SetColorUniform3(render_, &u_texenv, gstate.texenvcolor);
 	}
 	if (dirty & DIRTY_ALPHACOLORREF) {
-		SetColorUniform3Alpha255(render_, &u_alphacolorref, gstate.getColorTestRef(), gstate.getAlphaTestRef() & gstate.getAlphaTestMask());
+		if (shaderLanguage.bitwiseOps) {
+			render_->SetUniformUI1(&u_alphacolorref, gstate.getColorTestRef() | ((gstate.getAlphaTestRef() & gstate.getAlphaTestMask()) << 24));
+		} else {
+			SetColorUniform3Alpha255(render_, &u_alphacolorref, gstate.getColorTestRef(), gstate.getAlphaTestRef() & gstate.getAlphaTestMask());
+		}
 	}
 	if (dirty & DIRTY_ALPHACOLORMASK) {
 		render_->SetUniformUI1(&u_alphacolormask, gstate.getColorTestMask() | (gstate.getAlphaTestMask() << 24));
@@ -456,6 +456,9 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 	}
 	if (dirty & DIRTY_FOGCOLOR) {
 		SetColorUniform3(render_, &u_fogcolor, gstate.fogcolor);
+		if (IsVRBuild()) {
+			SetVRCompat(VR_COMPAT_FOG_COLOR, gstate.fogcolor);
+		}
 	}
 	if (dirty & DIRTY_FOGCOEF) {
 		float fogcoef[2] = {
@@ -534,7 +537,7 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 		SetMatrix4x3(render_, &u_world, gstate.worldMatrix);
 	}
 	if (dirty & DIRTY_VIEWMATRIX) {
-		if (IsVRBuild()) {
+		if (gstate_c.Use(GPU_USE_VIRTUAL_REALITY)) {
 			float leftEyeView[16];
 			float rightEyeView[16];
 			ConvertMatrix4x3To4x4Transposed(leftEyeView, gstate.viewMatrix);
@@ -561,7 +564,7 @@ void LinkedShader::UpdateUniforms(u32 vertType, const ShaderID &vsid, bool useBu
 		float viewZScale = halfActualZRange;
 		float viewZCenter = minz + halfActualZRange;
 
-		if (!gstate_c.Supports(GPU_SUPPORTS_ACCURATE_DEPTH)) {
+		if (!gstate_c.Use(GPU_USE_ACCURATE_DEPTH)) {
 			viewZScale = vpZScale;
 			viewZCenter = vpZCenter;
 		}
@@ -813,7 +816,7 @@ LinkedShader *ShaderManagerGLES::ApplyFragmentShader(VShaderID VSID, Shader *vs,
 	}
 
 	if (lastVShaderSame_ && FSID == lastFSID_) {
-		lastShader_->UpdateUniforms(vertType, VSID, useBufferedRendering);
+		lastShader_->UpdateUniforms(vertType, VSID, useBufferedRendering, draw_->GetShaderLanguageDesc());
 		return lastShader_;
 	}
 
@@ -856,7 +859,7 @@ LinkedShader *ShaderManagerGLES::ApplyFragmentShader(VShaderID VSID, Shader *vs,
 	} else {
 		ls->use(VSID);
 	}
-	ls->UpdateUniforms(vertType, VSID, useBufferedRendering);
+	ls->UpdateUniforms(vertType, VSID, useBufferedRendering, draw_->GetShaderLanguageDesc());
 
 	lastShader_ = ls;
 	return ls;
@@ -933,11 +936,11 @@ std::string ShaderManagerGLES::DebugGetShaderString(std::string id, DebugShaderT
 // as sometimes these features might have an effect on the ID bits.
 
 #define CACHE_HEADER_MAGIC 0x83277592
-#define CACHE_VERSION 15
+#define CACHE_VERSION 16
 struct CacheHeader {
 	uint32_t magic;
 	uint32_t version;
-	uint32_t featureFlags;
+	uint32_t useFlags;
 	uint32_t reserved;
 	int numVertexShaders;
 	int numFragmentShaders;
@@ -954,7 +957,7 @@ void ShaderManagerGLES::Load(const Path &filename) {
 	if (!f.ReadArray(&header, 1)) {
 		return;
 	}
-	if (header.magic != CACHE_HEADER_MAGIC || header.version != CACHE_VERSION || header.featureFlags != gstate_c.featureFlags) {
+	if (header.magic != CACHE_HEADER_MAGIC || header.version != CACHE_VERSION || header.useFlags != gstate_c.useFlags) {
 		return;
 	}
 	diskCachePending_.start = time_now_d();
@@ -1110,7 +1113,7 @@ void ShaderManagerGLES::Save(const Path &filename) {
 	header.magic = CACHE_HEADER_MAGIC;
 	header.version = CACHE_VERSION;
 	header.reserved = 0;
-	header.featureFlags = gstate_c.featureFlags;
+	header.useFlags = gstate_c.useFlags;
 	header.numVertexShaders = GetNumVertexShaders();
 	header.numFragmentShaders = GetNumFragmentShaders();
 	header.numLinkedPrograms = GetNumPrograms();

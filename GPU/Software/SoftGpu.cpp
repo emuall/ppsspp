@@ -1260,7 +1260,7 @@ void SoftGPU::InvalidateCache(u32 addr, int size, GPUInvalidationType type)
 	// Nothing to invalidate.
 }
 
-void SoftGPU::NotifyVideoUpload(u32 addr, int size, int width, int format)
+void SoftGPU::PerformWriteFormattedFromMemory(u32 addr, int size, int width, GEBufferFormat format)
 {
 	// Ignore.
 }
@@ -1285,14 +1285,14 @@ bool SoftGPU::PerformMemorySet(u32 dest, u8 v, int size)
 	return false;
 }
 
-bool SoftGPU::PerformMemoryDownload(u32 dest, int size)
+bool SoftGPU::PerformReadbackToMemory(u32 dest, int size)
 {
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
 	return false;
 }
 
-bool SoftGPU::PerformMemoryUpload(u32 dest, int size)
+bool SoftGPU::PerformWriteColorFromMemory(u32 dest, int size)
 {
 	// Nothing to update.
 	InvalidateCache(dest, size, GPU_INVALIDATE_HINT);
@@ -1300,7 +1300,7 @@ bool SoftGPU::PerformMemoryUpload(u32 dest, int size)
 	return false;
 }
 
-bool SoftGPU::PerformStencilUpload(u32 dest, int size, StencilUpload flags)
+bool SoftGPU::PerformWriteStencilFromMemory(u32 dest, int size, WriteStencil flags)
 {
 	return false;
 }
@@ -1337,6 +1337,9 @@ bool SoftGPU::GetCurrentFramebuffer(GPUDebugBuffer &buffer, GPUDebugFramebufferT
 	DrawingCoords size = GetTargetSize(stride);
 	GEBufferFormat fmt = gstate.FrameBufFormat();
 	const u8 *src = fb.data;
+
+	if (!Memory::IsValidAddress(displayFramebuf_))
+		return false;
 
 	if (type == GPU_DBG_FRAMEBUF_DISPLAY) {
 		size.x = 480;
@@ -1405,8 +1408,8 @@ bool SoftGPU::GetCurrentStencilbuffer(GPUDebugBuffer &buffer) {
 	return true;
 }
 
-bool SoftGPU::GetCurrentTexture(GPUDebugBuffer &buffer, int level)
-{
+bool SoftGPU::GetCurrentTexture(GPUDebugBuffer &buffer, int level, bool *isFramebuffer) {
+	*isFramebuffer = false;
 	return Rasterizer::GetCurrentTexture(buffer, level);
 }
 

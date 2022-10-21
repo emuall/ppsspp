@@ -235,7 +235,6 @@ public:
 	float fGameListScrollPosition;
 	int iBloomHack; //0 = off, 1 = safe, 2 = balanced, 3 = aggressive
 	bool bBlockTransferGPU;
-	bool bFragmentTestCache;
 	int iSplineBezierQuality; // 0 = low , 1 = Intermediate , 2 = High
 	bool bHardwareTessellation;
 	bool bShaderCache;  // Hidden ini-only setting, useful for debugging shader compile times.
@@ -458,6 +457,7 @@ public:
 	bool bEnableVR;
 	bool bEnable6DoF;
 	bool bEnableStereo;
+	int iCameraDistance;
 	int iCanvasDistance;
 	int iFieldOfViewPercentage;
 

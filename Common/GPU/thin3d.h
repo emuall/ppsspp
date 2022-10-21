@@ -333,7 +333,7 @@ public:
 		RASPBERRY_SHADER_COMP_HANG = 8,
 		MALI_CONSTANT_LOAD_BUG = 9,
 		SUBPASS_FEEDBACK_BROKEN = 10,
-		GEOMETRY_SHADERS_SLOW = 11,
+		GEOMETRY_SHADERS_SLOW_OR_BROKEN = 11,
 		MAX_BUG,
 	};
 
@@ -616,6 +616,8 @@ public:
 
 	virtual void SetErrorCallback(ErrorCallbackFn callback, void *userdata) {}
 
+	virtual void DebugAnnotate(const char *annotation) {}
+
 	// Partial pipeline state, used to create pipelines. (in practice, in d3d11 they'll use the native state objects directly).
 	// TODO: Possibly ditch these and just put the descs directly in PipelineDesc since only D3D11 benefits.
 	virtual DepthStencilState *CreateDepthStencilState(const DepthStencilStateDesc &desc) = 0;
@@ -656,7 +658,7 @@ public:
 	virtual Framebuffer *GetCurrentRenderTarget() = 0;
 
 	// binding must be < MAX_TEXTURE_SLOTS (0, 1 are okay if it's 2).
-	virtual void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit, int attachment) = 0;
+	virtual void BindFramebufferAsTexture(Framebuffer *fbo, int binding, FBChannel channelBit) = 0;
 
 	// Framebuffer fetch / input attachment support, needs to be explicit in Vulkan.
 	virtual void BindCurrentFramebufferForColorInput() {}
@@ -734,6 +736,9 @@ public:
 
 	// Flush state like scissors etc so the caller can do its own custom drawing.
 	virtual void FlushState() {}
+
+	// This is called when we launch a new game, so any collected internal stats in the backends don't carry over.
+	virtual void ResetStats() {}
 
 	virtual int GetCurrentStepId() const = 0;
 

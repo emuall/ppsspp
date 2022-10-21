@@ -937,7 +937,6 @@ static ConfigSetting graphicsSettings[] = {
 	ConfigSetting("ShaderChainRequires60FPS", &g_Config.bShaderChainRequires60FPS, false, true, true),
 
 	ReportedConfigSetting("MemBlockTransferGPU", &g_Config.bBlockTransferGPU, true, true, true),
-	ReportedConfigSetting("FragmentTestCache", &g_Config.bFragmentTestCache, true, true, true),
 
 	ConfigSetting("GfxDebugOutput", &g_Config.bGfxDebugOutput, false, false, false),
 	ConfigSetting("LogFrameDrops", &g_Config.bLogFrameDrops, false, true, false),
@@ -1207,6 +1206,7 @@ static ConfigSetting vrSettings[] = {
 	ConfigSetting("VREnable", &g_Config.bEnableVR, true),
 	ConfigSetting("VREnable6DoF", &g_Config.bEnable6DoF, true),
 	ConfigSetting("VREnableStereo", &g_Config.bEnableStereo, false),
+	ConfigSetting("VRCameraDistance", &g_Config.iCameraDistance, 0),
 	ConfigSetting("VRCanvasDistance", &g_Config.iCanvasDistance, 6),
 	ConfigSetting("VRFieldOfView", &g_Config.iFieldOfViewPercentage, 100),
 

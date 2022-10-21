@@ -147,7 +147,7 @@ void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManag
 			bool alphaMask = gstate.isClearModeAlphaMask();
 			key.colorWriteMask = (colorMask ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT) : 0) | (alphaMask ? VK_COLOR_COMPONENT_A_BIT : 0);
 		} else {
-			pipelineState_.Convert(draw_->GetDeviceCaps().fragmentShaderInt32Supported);
+			pipelineState_.Convert(draw_->GetShaderLanguageDesc().bitwiseOps);
 			GenericMaskState &maskState = pipelineState_.maskState;
 			GenericBlendState &blendState = pipelineState_.blendState;
 			GenericLogicState &logicState = pipelineState_.logicState;
@@ -232,7 +232,7 @@ void DrawEngineVulkan::ConvertStateToVulkanKey(FramebufferManagerVulkan &fbManag
 			if (gstate.getDepthRangeMin() == 0 || gstate.getDepthRangeMax() == 65535) {
 				// TODO: Still has a bug where we clamp to depth range if one is not the full range.
 				// But the alternate is not clamping in either direction...
-				key.depthClampEnable = gstate.isDepthClampEnabled() && gstate_c.Supports(GPU_SUPPORTS_DEPTH_CLAMP);
+				key.depthClampEnable = gstate.isDepthClampEnabled() && gstate_c.Use(GPU_USE_DEPTH_CLAMP);
 			} else {
 				// We just want to clip in this case, the clamp would be clipped anyway.
 				key.depthClampEnable = false;

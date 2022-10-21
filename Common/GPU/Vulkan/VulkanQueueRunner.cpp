@@ -3,6 +3,7 @@
 #include "Common/GPU/DataFormat.h"
 #include "Common/GPU/Vulkan/VulkanQueueRunner.h"
 #include "Common/GPU/Vulkan/VulkanRenderManager.h"
+#include "Common/VR/PPSSPPVR.h"
 #include "Common/Log.h"
 #include "Common/TimeUtil.h"
 
@@ -515,6 +516,8 @@ void VulkanQueueRunner::PreprocessSteps(std::vector<VKRStep *> &steps) {
 					}
 					MergeRenderAreaRectInto(&steps[i]->render.renderArea, steps[j]->render.renderArea);
 					steps[i]->render.renderPassType = MergeRPTypes(steps[i]->render.renderPassType, steps[j]->render.renderPassType);
+					steps[i]->render.numDraws += steps[j]->render.numDraws;
+					steps[i]->render.numReads += steps[j]->render.numReads;
 					// Cheaply skip the first step.
 					steps[j]->stepType = VKRStepType::RENDER_SKIP;
 					break;
@@ -544,7 +547,7 @@ void VulkanQueueRunner::PreprocessSteps(std::vector<VKRStep *> &steps) {
 	}
 }
 
-void VulkanQueueRunner::RunSteps(std::vector<VKRStep *> &steps, FrameData &frameData, FrameDataShared &frameDataShared) {
+void VulkanQueueRunner::RunSteps(std::vector<VKRStep *> &steps, FrameData &frameData, FrameDataShared &frameDataShared, bool keepSteps) {
 	QueueProfileContext *profile = frameData.profilingEnabled_ ? &frameData.profile : nullptr;
 
 	if (profile)
@@ -622,11 +625,12 @@ void VulkanQueueRunner::RunSteps(std::vector<VKRStep *> &steps, FrameData &frame
 
 	// Deleting all in one go should be easier on the instruction cache than deleting
 	// them as we go - and easier to debug because we can look backwards in the frame.
-	for (auto step : steps) {
-		delete step;
+	if (!keepSteps) {
+		for (auto step : steps) {
+			delete step;
+		}
+		steps.clear();
 	}
-
-	steps.clear();
 
 	if (profile)
 		profile->cpuEndTime = time_now_d();
@@ -936,6 +940,8 @@ void VulkanQueueRunner::ApplyRenderPassMerge(std::vector<VKRStep *> &steps) {
 		// So we don't consider it for other things, maybe doesn't matter.
 		src->dependencies.clear();
 		src->stepType = VKRStepType::RENDER_SKIP;
+		dst->render.numDraws += src->render.numDraws;
+		dst->render.numReads += src->render.numReads;
 		dst->render.pipelineFlags |= src->render.pipelineFlags;
 		dst->render.renderPassType = MergeRPTypes(dst->render.renderPassType, src->render.renderPassType);
 	};
@@ -1108,6 +1114,9 @@ void VulkanQueueRunner::LogRenderPass(const VKRStep &pass, bool verbose) {
 				break;
 			case VKRRenderCommand::PUSH_CONSTANTS:
 				INFO_LOG(G3D, "  PushConstants(%d)", cmd.push.size);
+				break;
+			case VKRRenderCommand::DEBUG_ANNOTATION:
+				INFO_LOG(G3D, "  DebugAnnotation(%s)", cmd.debugAnnotation.annotation);
 				break;
 
 			case VKRRenderCommand::NUM_RENDER_COMMANDS:
@@ -1575,6 +1584,15 @@ void VulkanQueueRunner::PerformRenderPass(const VKRStep &step, VkCommandBuffer c
 			}
 			break;
 		}
+
+		case VKRRenderCommand::DEBUG_ANNOTATION:
+			if (vulkan_->Extensions().EXT_debug_utils) {
+				VkDebugUtilsLabelEXT labelInfo{ VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT };
+				labelInfo.pLabelName = c.debugAnnotation.annotation;
+				vkCmdInsertDebugUtilsLabelEXT(cmd, &labelInfo);
+			}
+			break;
+
 		default:
 			ERROR_LOG(G3D, "Unimpl queue command");
 		}
@@ -1652,7 +1670,11 @@ VKRRenderPass *VulkanQueueRunner::PerformBindFramebufferAsRenderTarget(const VKR
 		};
 		renderPass = GetRenderPass(key);
 
-		framebuf = backbuffer_;
+		if (IsVRBuild()) {
+			framebuf = (VkFramebuffer)BindVRFramebuffer();
+		} else {
+			framebuf = backbuffer_;
+		}
 
 		// Raw, rotated backbuffer size.
 		w = vulkan_->GetBackbufferWidth();
@@ -1724,6 +1746,8 @@ void VulkanQueueRunner::PerformCopy(const VKRStep &step, VkCommandBuffer cmd) {
 
 	// We can't copy only depth or only stencil unfortunately - or can we?.
 	if (step.copy.aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+		_dbg_assert_(src->depth.image != VK_NULL_HANDLE);
+
 		if (src->depth.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
 			SetupTransitionToTransferSrc(src->depth, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, &recordBarrier_);
 		}
@@ -1988,6 +2012,7 @@ void VulkanQueueRunner::PerformReadback(const VKRStep &step, VkCommandBuffer cmd
 			srcImage = &step.readback.src->color;
 		} else if (step.readback.aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
 			srcImage = &step.readback.src->depth;
+			_dbg_assert_(srcImage->image != VK_NULL_HANDLE);
 		} else {
 			_dbg_assert_msg_(false, "No image aspect to readback?");
 			return;

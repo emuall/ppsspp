@@ -81,6 +81,7 @@ static Promise<VkShaderModule> *CompileShaderModuleAsync(VulkanContext *vulkan, 
 				case VK_SHADER_STAGE_FRAGMENT_BIT: createTag = "game_fragment"; break;
 				case VK_SHADER_STAGE_GEOMETRY_BIT: createTag = "game_geometry"; break;
 				case VK_SHADER_STAGE_COMPUTE_BIT: createTag = "game_compute"; break;
+				default: break;
 				}
 			}
 
@@ -482,11 +483,11 @@ VulkanGeometryShader *ShaderManagerVulkan::GetGeometryShaderFromModule(VkShaderM
 // instantaneous.
 
 #define CACHE_HEADER_MAGIC 0xff51f420 
-#define CACHE_VERSION 29
+#define CACHE_VERSION 30
 struct VulkanCacheHeader {
 	uint32_t magic;
 	uint32_t version;
-	uint32_t featureFlags;
+	uint32_t useFlags;
 	uint32_t reserved;
 	int numVertexShaders;
 	int numFragmentShaders;
@@ -500,7 +501,7 @@ bool ShaderManagerVulkan::LoadCache(FILE *f) {
 		return false;
 	if (header.version != CACHE_VERSION)
 		return false;
-	if (header.featureFlags != gstate_c.featureFlags)
+	if (header.useFlags != gstate_c.useFlags)
 		return false;
 
 	VulkanContext *vulkan = (VulkanContext *)draw_->GetNativeObject(Draw::NativeObject::CONTEXT);
@@ -563,7 +564,7 @@ void ShaderManagerVulkan::SaveCache(FILE *f) {
 	VulkanCacheHeader header{};
 	header.magic = CACHE_HEADER_MAGIC;
 	header.version = CACHE_VERSION;
-	header.featureFlags = gstate_c.featureFlags;
+	header.useFlags = gstate_c.useFlags;
 	header.reserved = 0;
 	header.numVertexShaders = (int)vsCache_.size();
 	header.numFragmentShaders = (int)fsCache_.size();

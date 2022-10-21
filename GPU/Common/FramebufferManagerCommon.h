@@ -307,10 +307,10 @@ public:
 	void CopyDisplayToOutput(bool reallyDirty);
 
 	bool NotifyFramebufferCopy(u32 src, u32 dest, int size, GPUCopyFlag flags, u32 skipDrawReason);
-	void NotifyVideoUpload(u32 addr, int size, int width, GEBufferFormat fmt);
+	void PerformWriteFormattedFromMemory(u32 addr, int size, int width, GEBufferFormat fmt);
 	void UpdateFromMemory(u32 addr, int size);
 	void ApplyClearToMemory(int x1, int y1, int x2, int y2, u32 clearColor);
-	bool PerformStencilUpload(u32 addr, int size, StencilUpload flags);
+	bool PerformWriteStencilFromMemory(u32 addr, int size, WriteStencil flags);
 
 	// Returns true if it's sure this is a direct FBO->FBO transfer and it has already handle it.
 	// In that case we hardly need to actually copy the bytes in VRAM, they will be wrong anyway (unless
@@ -441,7 +441,10 @@ public:
 		Draw2DPipeline *pipeline, const char *tag);
 
 protected:
-	virtual void PackFramebufferSync(VirtualFramebuffer *vfb, int x, int y, int w, int h, RasterChannel channel);
+	virtual void ReadbackFramebufferSync(VirtualFramebuffer *vfb, int x, int y, int w, int h, RasterChannel channel);
+	// Used for when a shader is required, such as GLES.
+	virtual bool ReadbackDepthbufferSync(Draw::Framebuffer *fbo, int x, int y, int w, int h, uint16_t *pixels, int pixelsStride);
+	virtual bool ReadbackStencilbufferSync(Draw::Framebuffer *fbo, int x, int y, int w, int h, uint8_t *pixels, int pixelsStride);
 	void SetViewport2D(int x, int y, int w, int h);
 	Draw::Texture *MakePixelTexture(const u8 *srcPixels, GEBufferFormat srcPixelFormat, int srcStride, int width, int height);
 	void DrawActiveTexture(float x, float y, float w, float h, float destW, float destH, float u0, float v0, float u1, float v1, int uvRotation, int flags);
@@ -566,8 +569,14 @@ protected:
 
 	// Common implementation of stencil buffer upload. Also not 100% optimal, but not performance
 	// critical either.
-	Draw::Pipeline *stencilUploadPipeline_ = nullptr;
-	Draw::SamplerState *stencilUploadSampler_ = nullptr;
+	Draw::Pipeline *stencilWritePipeline_ = nullptr;
+	Draw::SamplerState *stencilWriteSampler_ = nullptr;
+
+	// Used on GLES where we can't directly readback depth or stencil, but here for simplicity.
+	Draw::Pipeline *stencilReadbackPipeline_ = nullptr;
+	Draw::SamplerState *stencilReadbackSampler_ = nullptr;
+	Draw::Pipeline *depthReadbackPipeline_ = nullptr;
+	Draw::SamplerState *depthReadbackSampler_ = nullptr;
 
 	// Draw2D pipelines
 	Draw2DPipeline *draw2DPipelineColor_ = nullptr;
