@@ -69,6 +69,7 @@ tests_good = [
   "cpu/cpu_alu/cpu_branch",
   "cpu/cpu_alu/cpu_branch2",
   "cpu/vfpu/colors",
+  "cpu/vfpu/convert",
   "cpu/vfpu/gum",
   "cpu/vfpu/matrix",
   "cpu/vfpu/vavg",
@@ -138,6 +139,10 @@ tests_good = [
   "font/optimum",
   "font/resolution",
   "font/shadowimagerect",
+  "gpu/bounding/count",
+  "gpu/bounding/planes",
+  "gpu/bounding/vertexaddr",
+  "gpu/bounding/viewport",
   "gpu/callbacks/ge_callbacks",
   "gpu/clipping/homogeneous",
   "gpu/clut/address",
@@ -368,7 +373,6 @@ tests_good = [
 tests_next = [
 # These are the next tests up for fixing. These run by default.
   "cpu/fpu/fcr",
-  "cpu/vfpu/convert",
   "cpu/vfpu/prefixes",
   "cpu/vfpu/vector",
   "cpu/vfpu/vregs",

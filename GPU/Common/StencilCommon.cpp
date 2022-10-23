@@ -84,7 +84,7 @@ static const SamplerDef samplers[1] = {
 };
 
 void GenerateStencilFs(char *buffer, const ShaderLanguageDesc &lang, const Draw::Bugs &bugs) {
-	ShaderWriter writer(buffer, lang, ShaderStage::Fragment, nullptr, 0);
+	ShaderWriter writer(buffer, lang, ShaderStage::Fragment);
 	writer.HighPrecisionFloat();
 	writer.DeclareSamplers(samplers);
 
@@ -94,7 +94,7 @@ void GenerateStencilFs(char *buffer, const ShaderLanguageDesc &lang, const Draw:
 
 	writer.C("float roundAndScaleTo255f(in float x) { return floor(x * 255.99); }\n");
 
-	writer.BeginFSMain(uniforms, varyings, FSFLAG_NONE);
+	writer.BeginFSMain(uniforms, varyings);
 
 	writer.C("  vec4 index = ").SampleTexture2D("tex", "v_texcoord.xy").C(";\n");
 	writer.C("  vec4 outColor = index.aaaa;\n");  // Only care about a.
@@ -106,12 +106,12 @@ void GenerateStencilFs(char *buffer, const ShaderLanguageDesc &lang, const Draw:
 		writer.C("  gl_FragDepth = gl_FragCoord.z;\n");
 	}
 
-	writer.EndFSMain("outColor", FSFLAG_NONE);
+	writer.EndFSMain("outColor");
 }
 
 // This can probably be shared with some other shaders, like reinterpret or the future depth upload.
 void GenerateStencilVs(char *buffer, const ShaderLanguageDesc &lang) {
-	ShaderWriter writer(buffer, lang, ShaderStage::Vertex, nullptr, 0);
+	ShaderWriter writer(buffer, lang, ShaderStage::Vertex);
 
 	writer.BeginVSMain(lang.vertexIndex ? Slice<InputDef>::empty() : inputs, Slice<UniformDef>::empty(), varyings);
 
