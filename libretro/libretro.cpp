@@ -61,6 +61,10 @@
 #define DIR_SEP_CHRS "/"
 #endif
 
+#ifdef HAVE_LIBRETRO_VFS
+#include "streams/file_stream.h"
+#endif
+
 #define SAMPLERATE 44100
 
 #define AUDIO_RING_BUFFER_SIZE      (1 << 16)
