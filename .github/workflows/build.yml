@@ -177,6 +177,13 @@ jobs:
           args: make -C libretro -f Makefile -j2
           id: clang-libretro
 
+        - os: ubuntu-latest
+          extra: android
+          cc: clang
+          cxx: clang++
+          args: cd libretro/jni && ndk-build -B
+          id: ndk-libretro
+          
         - os: macos-latest
           extra: test
           cc: clang
